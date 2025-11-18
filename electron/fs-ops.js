@@ -79,10 +79,10 @@ async function runProxyJob(config, onProgress) {
             }
             throw err;
           }
-          for (const p of proxyEntries) {
-            if (p.isFile()) {
-              const proxyAbs = path.join(entryAbs, p.name);
-              const proxyRel = path.join(entryRel, p.name);
+          for (const subEntry of proxyEntries) {
+            if (subEntry.isFile()) {
+              const proxyAbs = path.join(entryAbs, subEntry.name);
+              const proxyRel = path.join(entryRel, subEntry.name);
               proxies.push({ abs: proxyAbs, rel: proxyRel });
             }
           }
@@ -109,27 +109,33 @@ async function runProxyJob(config, onProgress) {
 
   function reportProgress(processed, currentFile) {
     const progress = total > 0 ? (processed / total) * 100 : 100;
-    onProgress({
-      totalFiles: total,
-      processedFiles: processed,
-      progress,
-      currentFile
-    });
+    if (typeof onProgress === 'function') {
+      onProgress({
+        totalFiles: total,
+        processedFiles: processed,
+        progress,
+        currentFile
+      });
+    }
   }
 
   reportProgress(0, null);
 
   let processed = 0;
 
+  for (const proxy of proxies) {
+    let currentFile = proxy.rel;
+    try {
       if (operation === 'delete') {
-        await fsp.unlink(p.abs);
+        // (You’ve disabled delete in the UI, but keep behavior here for later)
+        await fsp.unlink(proxy.abs);
         deleted++;
       } else {
-        const baseName = path.basename(p.abs);
+        const baseName = path.basename(proxy.abs);
         let targetAbs;
 
         if (preserveStructure === 'preserve') {
-          const relDir = path.dirname(p.rel);
+          const relDir = path.dirname(proxy.rel);
           const destDir = path.join(destinationDir, relDir);
           await fsp.mkdir(destDir, { recursive: true });
           targetAbs = path.join(destDir, baseName);
@@ -138,7 +144,7 @@ async function runProxyJob(config, onProgress) {
           targetAbs = path.join(destinationDir, baseName);
         }
 
-        // 👇 NEW: skip if file already exists at destination
+        // Skip if file already exists at destination
         let targetExists = false;
         try {
           await fsp.access(targetAbs, fs.constants.F_OK);
@@ -149,17 +155,17 @@ async function runProxyJob(config, onProgress) {
 
         if (targetExists) {
           skippedExisting++;
-          currentFile = `${p.rel} (skipped; already at destination)`;
+          currentFile = `${proxy.rel} (skipped; already at destination)`;
         } else if (operation === 'copy') {
-          await fsp.copyFile(p.abs, targetAbs);
+          await fsp.copyFile(proxy.abs, targetAbs);
           copied++;
         } else if (operation === 'move') {
           try {
-            await fsp.rename(p.abs, targetAbs);
+            await fsp.rename(proxy.abs, targetAbs);
           } catch (err) {
             if (err.code === 'EXDEV') {
-              await fsp.copyFile(p.abs, targetAbs);
-              await fsp.unlink(p.abs);
+              await fsp.copyFile(proxy.abs, targetAbs);
+              await fsp.unlink(proxy.abs);
             } else {
               throw err;
             }
@@ -167,8 +173,16 @@ async function runProxyJob(config, onProgress) {
           moved++;
         }
       }
+    } catch (err) {
+      errors.push({ file: proxy.abs, error: err.message || String(err) });
+      currentFile = `${proxy.rel} (error)`;
+    } finally {
+      processed++;
+      reportProgress(processed, currentFile);
+    }
+  }
 
-    return {
+  return {
     mediaDir,
     destinationDir: operation === 'delete' ? null : destinationDir,
     operation,
