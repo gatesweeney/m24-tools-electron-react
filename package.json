@@ -1,0 +1,70 @@
+{
+  "name": "m24-tools",
+  "productName": "M24 Tools",
+  "version": "1.0.0",
+  "homepage": "./",
+  "private": true,
+  "build": {
+  "appId": "com.m24.tools",
+  "mac": {
+    "icon": "src/assets/webclip.icns"
+  },
+  "win": {
+    "icon": "src/assets/webclip.png"
+  },
+  "files": [
+    "build/**/*",
+    "electron/**/*",
+    "package.json"
+  ]
+},
+  "main": "electron/main.js",
+  "dependencies": {
+    "@emotion/react": "^11.11.4",
+    "@emotion/styled": "^11.11.0",
+    "@mui/icons-material": "^5.15.15",
+    "@mui/material": "^5.15.15",
+    "browser-image-compression": "^2.0.2",
+    "file-saver": "^2.0.5",
+    "heic2any": "^0.0.4",
+    "jszip": "^3.10.1",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "react-router-dom": "^6.28.0",
+    "web-vitals": "^3.5.2"
+  },
+  "devDependencies": {
+    "concurrently": "^9.0.1",
+    "electron": "^34.0.0",
+    "electron-builder": "^26.0.12",
+    "electron-reload": "^1.5.0",
+    "react-scripts": "5.0.1"
+  },
+  "scripts": {
+    "react-start": "react-scripts start",
+    "react-build": "react-scripts build",
+    "react-test": "react-scripts test",
+    "react-eject": "react-scripts eject",
+    "electron-start": "electron .",
+    "dev": "concurrently \"npm run react-start\" \"npm run electron-start\"",
+    "build": "npm run react-build"
+  },
+  "eslintConfig": {
+    "extends": [
+      "react-app",
+      "react-app/jest"
+    ]
+  },
+  "browserslist": {
+    "production": [
+      ">0.2%",
+      "not dead",
+      "not op_mini all"
+    ],
+    "development": [
+      "last 1 chrome version",
+      "last 1 firefox version",
+      "last 1 safari version"
+    ]
+  }
+}
