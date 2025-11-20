@@ -7,6 +7,9 @@ import HomePage from './pages/HomePage';
 import ProxyToolPage from './pages/ProxyToolPage';
 import HeicConverterPage from './pages/HeicConverterPage';
 import ImageCompressorPage from './pages/ImageCompressorPage';
+import OffshootLogPage from './pages/OffshootLogPage';
+import IndexerPage from './pages/IndexerPage';
+import SearchPage from './pages/SearchPage';
 
 function App() {
   return (
@@ -35,6 +38,9 @@ function App() {
       <Route path="/proxy" element={<ProxyToolPage />} />
       <Route path="/heic-converter" element={<HeicConverterPage />} />
       <Route path="/image-compressor" element={<ImageCompressorPage />} />
+      <Route path="/offshoot-logs" element={<OffshootLogPage />} />
+      <Route path="/indexer" element={<IndexerPage />} />
+      <Route path="/search" element={<SearchPage />} />
     </Routes>
       </Box>
       <JobProgressBar />

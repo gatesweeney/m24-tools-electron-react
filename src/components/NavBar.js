@@ -10,9 +10,12 @@ import HomeIcon from '@mui/icons-material/Home';
 
 const pages = [
   { label: 'Home', path: '/' },
-  { label: 'Proxies', path: '/proxy' },
-  { label: 'HEIC', path: '/heic-converter' },
-  { label: 'Compressor', path: '/image-compressor' }
+  { label: 'Proxy Tool', path: '/proxy' },
+  { label: 'HEIC Converter', path: '/heic-converter' },
+  { label: 'Image Compressor', path: '/image-compressor' },
+  { label: 'OffShoot Logs', path: '/offshoot-logs' },
+  { label: 'Indexer', path: '/indexer' },
+  { label: 'Search', path: '/search' }
 ];
 
 function NavBar() {
@@ -20,14 +23,20 @@ function NavBar() {
 
     return (
     <AppBar
-      position="static"
+      position="sticky"
       elevation={1}
       sx={{
         WebkitAppRegion: 'drag',
-        pt: 3  // a little extra padding at the top where the macOS controls live
+        pt: 3,
+        minHeight: 64
       }}
     >
-      <Toolbar>
+      <Toolbar 
+          sx={{
+          minHeight: 48,
+          WebkitAppRegion: 'no-drag' // all interactive content is non-drag
+        }}
+      >
                 <IconButton
           size="large"
           edge="start"

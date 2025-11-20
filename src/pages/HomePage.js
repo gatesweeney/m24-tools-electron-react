@@ -66,6 +66,15 @@ function HomePage() {
             >
               Image Compressor
             </Button>
+            <Button
+              variant="contained"
+              size="large"
+              color="primary"
+              onClick={() => navigate('/offshoot-logs')}
+              sx={{ justifyContent: 'flex-start' }}
+            >
+              OffShoot Log Checker
+            </Button>
           </Stack>
         </Stack>
       </Paper>

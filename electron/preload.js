@@ -13,5 +13,18 @@ contextBridge.exposeInMainWorld('electronAPI', {
     return () => {
       ipcRenderer.removeListener('proxy:progress', listener);
     };
+  },
+
+  // Indexer / OffShoot stuff (examples)...
+  getIndexerState: async () => {
+    return await ipcRenderer.invoke('indexer:getState');
+  },
+  scanIndexerRoot: async (rootPath) => {
+    return await ipcRenderer.invoke('indexer:scanNow', rootPath || null);
+  },
+
+  // 👇 THIS is the function SearchPage expects:
+  searchIndexerFiles: async (query, limit) => {
+    return await ipcRenderer.invoke('indexer:searchFiles', query, limit || 200);
   }
 });

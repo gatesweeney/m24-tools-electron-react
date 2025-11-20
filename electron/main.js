@@ -1,20 +1,23 @@
 const { app, BrowserWindow, ipcMain, dialog } = require('electron');
 const path = require('path');
 const { runProxyJob } = require('./fs-ops');
+const { scanOffshootLogs } = require('./offshoot-logs');
+const { getIndexerState, scanNow, searchFiles } = require('../indexer/uiApi');
 
 const isDev = !app.isPackaged;
 let mainWindow;
 
 function createWindow() {
   mainWindow = new BrowserWindow({
-  width: 1100,
-  height: 600,
+  width: 1600,
+  height: 900,
   backgroundColor: '#121212',
-  icon: '../src/assets/webclip.png',
   webPreferences: {
     preload: path.join(__dirname, 'preload.js'),
     contextIsolation: true,
-    nodeIntegration: false
+    nodeIntegration: false,
+    webSecurity: false,            // 👈 allow local file:// loads
+    allowRunningInsecureContent: true
   },
   titleBarStyle: 'hiddenInset',
   title: 'M24 Tools'
@@ -78,6 +81,45 @@ ipcMain.handle('proxy:start', async (event, config) => {
     return { ok: true, summary };
   } catch (err) {
     console.error('Error running proxy job:', err);
+    return { ok: false, error: err.message || String(err) };
+  }
+});
+
+ipcMain.handle('offshoot:scan', async (event, rootFolder) => {
+  try {
+    const results = await scanOffshootLogs(rootFolder);
+    return { ok: true, results };
+  } catch (err) {
+    return { ok: false, error: err.message || String(err) };
+  }
+});
+
+ipcMain.handle('indexer:getState', async () => {
+  try {
+    const state = await getIndexerState();
+    return { ok: true, state };
+  } catch (err) {
+    console.error('[indexer] getState error:', err);
+    return { ok: false, error: err.message || String(err) };
+  }
+});
+
+ipcMain.handle('indexer:scanNow', async (event, rootPath) => {
+  try {
+    const result = await scanNow(rootPath);
+    return { ok: true, result };
+  } catch (err) {
+    console.error('[indexer] scanNow error:', err);
+    return { ok: false, error: err.message || String(err) };
+  }
+});
+
+ipcMain.handle('indexer:searchFiles', async (event, query, limit) => {
+  try {
+    const results = await searchFiles(query, limit || 200);
+    return { ok: true, results };
+  } catch (err) {
+    console.error('[indexer] searchFiles error:', err);
     return { ok: false, error: err.message || String(err) };
   }
 });
