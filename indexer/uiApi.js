@@ -57,7 +57,7 @@ async function getIndexerState() {
 
   return { drives, roots };
 }
-//
+
 /**
  * Trigger a manual scan.
  * For now, we just run the whole scan cycle; later we can limit to a specific rootPath if desired.
