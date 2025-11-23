@@ -63,7 +63,7 @@ function migrateToV1(db) {
       label           TEXT,
       is_active       INTEGER NOT NULL DEFAULT 1,
       deep_scan_mode  TEXT NOT NULL DEFAULT 'none',  -- 'none' | 'quick' | 'deep' | 'flash'
-      scan_interval_ms  INTEGER DEFAULT NULL,        -- null = global default; >0=ms; <0=manual-only
+      scan_interval_ms  INTEGER DEFAULT NULL,        -- null = global; >0=ms; <0=manual-only
       last_scan_at      TEXT,
       priority        INTEGER NOT NULL DEFAULT 0
     );
@@ -108,7 +108,18 @@ function migrateToV1(db) {
       changed_entries INTEGER
     );
 
-    -- FTS5 table for search (initially empty; we'll populate via Node code)
+    -- NEW: per-root camera detection
+    CREATE TABLE root_camera_info (
+      id          INTEGER PRIMARY KEY,
+      drive_uuid  TEXT,
+      root_path   TEXT,
+      camera_name TEXT,
+      confidence  REAL,
+      details     TEXT
+    );
+    CREATE UNIQUE INDEX root_camera_unique ON root_camera_info(drive_uuid, root_path);
+
+    -- NEW: FTS5 table for search
     CREATE VIRTUAL TABLE IF NOT EXISTS file_search
     USING fts5(
       name,
