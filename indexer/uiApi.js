@@ -2,9 +2,8 @@
 const { openDb } = require('./db');
 const { getWatchedRoots } = require('./drives');
 const { getMachineId } = require('./config');
-const path = require('path');
-const { ensureSearchIndex } = require('./searchIndex');
 const { runScanCycle } = require('./main');
+const { ensureSearchIndex } = require('./searchIndex');
 
 /**
  * Return an overview of drives + watched roots for the UI.
@@ -69,72 +68,6 @@ async function scanNow(rootPath) {
   return { ok: true };
 }
 
-/**
- * Add or re-activate a watched root for the given path.
- * - Finds the drive whose mount_point is a prefix of rootPath
- * - Inserts a row into watched_roots (or re-activates existing)
- * - Returns the updated indexer state
- */
-async function addRoot(rootPath) {
-  const db = openDb();
-  const machineId = getMachineId();
-  const nowIso = new Date().toISOString();
-
-  // Find drive by mount point
-  const drive = db.prepare(`
-    SELECT volume_uuid, primary_name, mount_point
-    FROM drives
-    WHERE machine_id = ?
-      AND ? LIKE (mount_point || '%')
-    ORDER BY LENGTH(mount_point) DESC
-    LIMIT 1
-  `).get(machineId, rootPath);
-
-  const driveUuid = drive?.volume_uuid || null;
-  const label = path.basename(rootPath.replace(/\/$/, '')) || rootPath;
-
-  const existing = db.prepare(`
-    SELECT id FROM watched_roots
-    WHERE drive_uuid IS ? AND root_path = ?
-  `).get(driveUuid, rootPath);
-
-  if (existing) {
-    db.prepare(`
-      UPDATE watched_roots
-      SET is_active = 1
-      WHERE id = ?
-    `).run(existing.id);
-  } else {
-    db.prepare(`
-      INSERT INTO watched_roots (
-        drive_uuid, root_path, label,
-        is_active, deep_scan_mode, scan_interval_ms, last_scan_at, priority
-      ) VALUES (?, ?, ?, 1, 'none', NULL, NULL, 0)
-    `).run(driveUuid, rootPath, label);
-  }
-
-  db.close();
-  // Return updated drives + roots
-  return await getIndexerState();
-}
-
-/**
- * Enable/disable a root by id.
- * - isActive: boolean
- */
-async function setRootActive(rootId, isActive) {
-  const db = openDb();
-  db.prepare(`
-    UPDATE watched_roots
-    SET is_active = ?
-    WHERE id = ?
-  `).run(isActive ? 1 : 0, rootId);
-  db.close();
-
-  return await getIndexerState();
-}
-
-
 
 async function searchFiles(q, limit = 200) {
   const db = openDb();
@@ -146,17 +79,18 @@ async function searchFiles(q, limit = 200) {
     return [];
   }
 
+  // Make sure FTS index exists and is populated
   ensureSearchIndex(db);
 
   const tokens = query.split(/\s+/).filter(Boolean);
   const ftsTokens = tokens
     .filter((t) => t.length >= 2)
-    .map((t) => `${t}*`);
+    .map((t) => `${t}*`); // prefix wildcard: a007* / venice* / mxf*
 
   let rows = [];
 
   if (ftsTokens.length > 0) {
-    const matchExpr = ftsTokens.join(' ');
+    const matchExpr = ftsTokens.join(' '); // AND all terms
 
     try {
       rows = db.prepare(`
@@ -189,6 +123,7 @@ async function searchFiles(q, limit = 200) {
     }
   }
 
+  // Fallback to LIKE if FTS yields nothing or errors
   if (rows.length === 0) {
     const pattern = `%${query}%`;
     rows = db.prepare(`
@@ -220,52 +155,8 @@ async function searchFiles(q, limit = 200) {
   return rows;
 }
 
-async function getFilesForRoot(rootId, limit = 1000) {
-  const db = openDb();
-  const machineId = getMachineId();
-
-  const root = db.prepare(`
-    SELECT drive_uuid, root_path
-    FROM watched_roots
-    WHERE id = ?
-  `).get(rootId);
-
-  if (!root) {
-    db.close();
-    return [];
-  }
-
-  const files = db.prepare(`
-    SELECT
-      id,
-      name,
-      ext,
-      file_type,
-      size_bytes,
-      last_status,
-      first_seen_at,
-      last_seen_at,
-      drive_uuid,
-      root_path,
-      relative_path
-    FROM files
-    WHERE machine_id = ?
-      AND drive_uuid = ?
-      AND root_path = ?
-    ORDER BY last_seen_at DESC
-    LIMIT ?
-  `).all(machineId, root.drive_uuid, root.root_path, limit);
-
-  db.close();
-  return files;
-}
-
 module.exports = {
   getIndexerState,
   scanNow,
-  searchFiles,
-  addRoot,
-  setRootActive,
-  getFilesForRoot,
-  
+  searchFiles
 };

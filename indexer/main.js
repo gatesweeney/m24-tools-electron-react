@@ -1,3 +1,4 @@
+// indexer/main.js
 const { openDb } = require('./db');
 const {
   getMountedDrives,
@@ -5,28 +6,13 @@ const {
   getWatchedRoots,
   ensureAutoRootsForDrives
 } = require('./drives');
-const { scanRootQuick } = require('./scanner');
-const { inferCameraForRoot } = require('./camera');
-const { updateSearchIndexForRoot } = require('./searchIndex');
-const { SCAN_INTERVAL_MS } = require('./config'); // if you still use this
+const { scanRootQuick /*, scanRootDeep, scanRootFlash */ } = require('./scanner');
 
-async function runScanCycle(progressCb) {
-  const report = (payload) => {
-    if (typeof progressCb === 'function') {
-      try {
-        progressCb(payload);
-      } catch (e) {
-        console.error('[indexer] progressCb error:', e);
-      }
-    }
-  };
-
+async function runScanCycle() {
   console.log('[indexer] Opening DB…');
   const db = openDb();
   const nowIso = new Date().toISOString();
   console.log('[indexer] DB opened at', nowIso);
-
-  report({ stage: 'startCycle', timestamp: nowIso });
 
   console.log('[indexer] Getting mounted drives…');
   const drives = getMountedDrives();
@@ -34,91 +20,63 @@ async function runScanCycle(progressCb) {
 
   drives.forEach((d) => upsertDrive(db, d, nowIso));
 
+  // Auto-create watched roots for eligible drives
   ensureAutoRootsForDrives(db);
 
   console.log('[indexer] Loading watched roots…');
   const roots = getWatchedRoots(db);
   console.log('[indexer] Found', roots.length, 'watched roots');
 
-  report({
-    stage: 'rootsLoaded',
-    totalRoots: roots.length,
-    timestamp: new Date().toISOString()
-  });
-
-  let index = 0;
   for (const root of roots) {
-    const driveUuid = root.drive_uuid;
-    const rootPath = root.root_path;
-    const mode = root.deep_scan_mode || 'none';
+  const driveUuid = root.drive_uuid;
+  const rootPath = root.root_path;
+  const mode = root.deep_scan_mode || 'none';
 
-    // (optional) per-root scheduling checks could go here…
+  // --- PER-ROOT SCHEDULING LOGIC ---
+  const now = Date.now();
 
-    index++;
-    report({
-      stage: 'rootStart',
-      rootPath,
-      driveUuid,
-      index,
-      totalRoots: roots.length,
-      timestamp: new Date().toISOString()
-    });
+  // If interval is set:
+  if (root.scan_interval_ms != null) {
+    const interval = root.scan_interval_ms;
 
-    try {
-      console.log(`[indexer] Quick scanning ${rootPath} (${driveUuid})`);
-      await scanRootQuick(db, driveUuid, rootPath);
+    // -1 means MANUAL ONLY (skip automatically)
+    if (interval < 0) {
+      console.log('[indexer] Skipping manual-only root:', rootPath);
+      continue;
+    }
 
-      // here you might do: inferCameraForRoot(db, driveUuid, rootPath);
-      // and updateSearchIndexForRoot(db, driveUuid, rootPath);
-
-      const nowIsoRoot = new Date().toISOString();
-      db.prepare(`
-        UPDATE watched_roots SET last_scan_at = ? WHERE id = ?
-      `).run(nowIsoRoot, root.id);
-
-      report({
-        stage: 'rootEnd',
-        rootPath,
-        driveUuid,
-        index,
-        totalRoots: roots.length,
-        timestamp: nowIsoRoot
-      });
-    } catch (err) {
-      console.error(`[indexer] Error scanning ${rootPath}:`, err);
-      report({
-        stage: 'rootError',
-        rootPath,
-        driveUuid,
-        index,
-        totalRoots: roots.length,
-        error: err.message || String(err),
-        timestamp: new Date().toISOString()
-      });
+    // If last scan time exists, enforce minimum delay
+    if (root.last_scan_at) {
+      const lastTime = Date.parse(root.last_scan_at);
+      if (!Number.isNaN(lastTime)) {
+        const elapsed = now - lastTime;
+        if (elapsed < interval) {
+          console.log(`[indexer] Skipping ${rootPath}, scanned ${elapsed}ms ago (< ${interval})`);
+          continue;
+        }
+      }
     }
   }
 
+  try {
+    console.log(`[indexer] Quick scanning ${rootPath} (${driveUuid})`);
+    await scanRootQuick(db, driveUuid, rootPath);
+
+    // Save timestamp after successful scan
+    const nowIsoRoot = new Date().toISOString();
+    db.prepare(`
+      UPDATE watched_roots SET last_scan_at = ? WHERE id = ?
+    `).run(nowIsoRoot, root.id);
+
+  } catch (err) {
+    console.error(`[indexer] Error scanning ${rootPath}:`, err);
+  }
+}
+
   console.log('[indexer] Closing DB…');
   db.close();
-  const endIso = new Date().toISOString();
   console.log('[indexer] Scan cycle finished.');
-
-  report({
-    stage: 'endCycle',
-    timestamp: endIso
-  });
 }
-
-if (require.main === module) {
-  runScanCycle().catch((err) => {
-    console.error('[indexer] Fatal error in scan cycle:', err);
-    process.exit(1);
-  });
-}
-
-module.exports = {
-  runScanCycle
-};
 
 if (require.main === module) {
   runScanCycle().catch((err) => {

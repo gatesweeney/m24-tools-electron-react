@@ -2,16 +2,7 @@ const { app, BrowserWindow, ipcMain, dialog } = require('electron');
 const path = require('path');
 const { runProxyJob } = require('./fs-ops');
 const { scanOffshootLogs } = require('./offshoot-logs');
-const { runScanCycle } = require('../indexer/main');
-
-const {
-  getIndexerState,
-  scanNow,
-  searchFiles,
-  addRoot,
-  setRootActive,
-  getFilesForRoot
-} = require('../indexer/uiApi');
+const { getIndexerState, scanNow, searchFiles } = require('../indexer/uiApi');
 
 const isDev = !app.isPackaged;
 let mainWindow;
@@ -99,7 +90,6 @@ ipcMain.handle('offshoot:scan', async (event, rootFolder) => {
     const results = await scanOffshootLogs(rootFolder);
     return { ok: true, results };
   } catch (err) {
-    console.error('Error running offshoot scan:', err);
     return { ok: false, error: err.message || String(err) };
   }
 });
@@ -116,14 +106,8 @@ ipcMain.handle('indexer:getState', async () => {
 
 ipcMain.handle('indexer:scanNow', async (event, rootPath) => {
   try {
-    const wc = event.sender;
-
-    await runScanCycle((payload) => {
-      // augment payload with rootPath hint if desired
-      wc.send('indexer:scanProgress', payload);
-    });
-
-    return { ok: true };
+    const result = await scanNow(rootPath);
+    return { ok: true, result };
   } catch (err) {
     console.error('[indexer] scanNow error:', err);
     return { ok: false, error: err.message || String(err) };
@@ -136,36 +120,6 @@ ipcMain.handle('indexer:searchFiles', async (event, query, limit) => {
     return { ok: true, results };
   } catch (err) {
     console.error('[indexer] searchFiles error:', err);
-    return { ok: false, error: err.message || String(err) };
-  }
-});
-
-ipcMain.handle('indexer:addRoot', async (event, rootPath) => {
-  try {
-    const state = await addRoot(rootPath);
-    return { ok: true, state };
-  } catch (err) {
-    console.error('[indexer] addRoot error:', err);
-    return { ok: false, error: err.message || String(err) };
-  }
-});
-
-ipcMain.handle('indexer:setRootActive', async (event, rootId, isActive) => {
-  try {
-    const state = await setRootActive(rootId, isActive);
-    return { ok: true, state };
-  } catch (err) {
-    console.error('[indexer] setRootActive error:', err);
-    return { ok: false, error: err.message || String(err) };
-  }
-});
-
-ipcMain.handle('indexer:getFilesForRoot', async (event, rootId, limit) => {
-  try {
-    const files = await getFilesForRoot(rootId, limit || 1000);
-    return { ok: true, files };
-  } catch (err) {
-    console.error('[indexer] getFilesForRoot error:', err);
     return { ok: false, error: err.message || String(err) };
   }
 });
