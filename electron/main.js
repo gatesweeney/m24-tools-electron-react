@@ -94,6 +94,19 @@ ipcMain.handle('offshoot:scan', async (event, rootFolder) => {
   }
 });
 
+
+// Open file or reveal path in Finder
+ipcMain.handle('fs:showItem', async (event, filePath) => {
+  try {
+    if (!filePath) return { ok: false, error: 'No file path provided.' };
+    shell.showItemInFolder(filePath);
+    return { ok: true };
+  } catch (err) {
+    console.error('Error showing item in folder:', err);
+    return { ok: false, error: err.message || String(err) };
+  }
+});
+
 ipcMain.handle('indexer:getState', async () => {
   try {
     const state = await getIndexerState();

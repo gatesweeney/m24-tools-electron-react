@@ -15,6 +15,14 @@ contextBridge.exposeInMainWorld('electronAPI', {
     };
   },
 
+  scanOffshootLogs: async (rootFolder) => {
+    return await ipcRenderer.invoke('offshoot:scan', rootFolder);
+  },
+
+  openInFinder: async (filePath) => {
+    return await ipcRenderer.invoke('fs:showItem', filePath);
+  },
+
   // Indexer / OffShoot stuff (examples)...
   getIndexerState: async () => {
     return await ipcRenderer.invoke('indexer:getState');
