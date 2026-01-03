@@ -3,6 +3,7 @@ const path = require('path');
 const { runProxyJob } = require('./fs-ops');
 const { scanOffshootLogs } = require('./offshoot-logs');
 const { getIndexerState, scanNow, searchFiles } = require('../indexer/uiApi');
+const { getInfoJson, normalizeFormats, downloadWithFormat } = require('./ytdlp');
 
 const isDev = !app.isPackaged;
 let mainWindow;
@@ -133,6 +134,47 @@ ipcMain.handle('indexer:searchFiles', async (event, query, limit) => {
     return { ok: true, results };
   } catch (err) {
     console.error('[indexer] searchFiles error:', err);
+    return { ok: false, error: err.message || String(err) };
+  }
+});
+
+ipcMain.handle('ytdlp:getFormats', async (_evt, url) => {
+  try {
+    const info = await getInfoJson(url);
+    const formats = normalizeFormats(info);
+    return {
+      ok: true,
+      info: {
+        id: info.id,
+        title: info.title,
+        uploader: info.uploader,
+        duration: info.duration,
+        webpage_url: info.webpage_url
+      },
+      formats
+    };
+  } catch (err) {
+    return { ok: false, error: err.message || String(err) };
+  }
+});
+
+ipcMain.handle('ytdlp:download', async (evt, payload) => {
+  try {
+    const wc = evt.sender;
+    const { url, formatId, destDir, outputTemplate } = payload;
+
+    await downloadWithFormat({
+      url,
+      formatId,
+      destDir,
+      outputTemplate,
+      onProgress: (p) => {
+        wc.send('ytdlp:progress', p);
+      }
+    });
+
+    return { ok: true };
+  } catch (err) {
     return { ok: false, error: err.message || String(err) };
   }
 });

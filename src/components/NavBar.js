@@ -15,7 +15,8 @@ const pages = [
   { label: 'Image Compressor', path: '/image-compressor' },
   { label: 'OffShoot Logs', path: '/offshoot-logs' },
   { label: 'Indexer', path: '/indexer' },
-  { label: 'Search', path: '/search' }
+  { label: 'Search', path: '/search' },
+  { label: 'YouTube', path: '/youtube' }
 ];
 
 function NavBar() {

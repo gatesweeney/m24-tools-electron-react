@@ -2,20 +2,20 @@
   "name": "m24-tools",
   "productName": "M24 Tools",
   "version": "1.0.0",
-  "homepage": "http://./",
+  "homepage": ".",
   "private": true,
   "build": {
     "appId": "com.m24.tools",
-    "mac": {
-      "icon": "src/assets/webclip.icns"
-    },
-    "win": {
-      "icon": "src/assets/webclip.png"
-    },
+    "mac": { "icon": "src/assets/webclip.icns" },
+    "win": { "icon": "src/assets/webclip.png" },
     "files": [
       "build/**/*",
       "electron/**/*",
+      "indexer/**/*",
       "package.json"
+    ],
+    "asarUnpack": [
+      "electron/bin/**"
     ]
   },
   "main": "electron/main.js",

@@ -10,6 +10,7 @@ import ImageCompressorPage from './pages/ImageCompressorPage';
 import OffshootLogPage from './pages/OffshootLogPage';
 import IndexerPage from './pages/IndexerPage';
 import SearchPage from './pages/SearchPage';
+import YouTubeDownloaderPage from './pages/YouTubeDownloaderPage';
 
 function App() {
   return (
@@ -41,6 +42,7 @@ function App() {
       <Route path="/offshoot-logs" element={<OffshootLogPage />} />
       <Route path="/indexer" element={<IndexerPage />} />
       <Route path="/search" element={<SearchPage />} />
+      <Route path="/youtube" element={<YouTubeDownloaderPage />} />
     </Routes>
       </Box>
       <JobProgressBar />

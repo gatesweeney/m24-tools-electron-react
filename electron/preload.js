@@ -34,5 +34,17 @@ contextBridge.exposeInMainWorld('electronAPI', {
   // 👇 THIS is the function SearchPage expects:
   searchIndexerFiles: async (query, limit) => {
     return await ipcRenderer.invoke('indexer:searchFiles', query, limit || 200);
-  }
+  },
+
+  getYtFormats: async (url) => ipcRenderer.invoke('ytdlp:getFormats', url),
+  downloadYtFormat: async (payload) => ipcRenderer.invoke('ytdlp:download', payload),
+  onYtProgress: (callback) => {
+    const listener = (_event, data) => callback(data);
+    ipcRenderer.on('ytdlp:progress', listener);
+    return () => ipcRenderer.removeListener('ytdlp:progress', listener);
+  },
+
+
+
+  
 });
