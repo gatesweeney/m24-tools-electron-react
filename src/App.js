@@ -11,6 +11,7 @@ import OffshootLogPage from './pages/OffshootLogPage';
 import IndexerPage from './pages/IndexerPage';
 import SearchPage from './pages/SearchPage';
 import YouTubeDownloaderPage from './pages/YouTubeDownloaderPage';
+import YouTubeSimplePage from './pages/YouTubeSimplePage';
 
 function App() {
   return (
@@ -43,6 +44,7 @@ function App() {
       <Route path="/indexer" element={<IndexerPage />} />
       <Route path="/search" element={<SearchPage />} />
       <Route path="/youtube" element={<YouTubeDownloaderPage />} />
+      <Route path="/youtube-simple" element={<YouTubeSimplePage />} />
     </Routes>
       </Box>
       <JobProgressBar />

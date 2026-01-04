@@ -91,6 +91,22 @@ export default function YouTubeDownloaderPage() {
   // Default destination
   const [destDir, setDestDir] = useState('~/Downloads');
 
+  const [filterModel, setFilterModel] = useState({
+  items: [{ id: 1, field: 'acodec', operator: 'contains', value: 'mp4' }]
+  });
+
+  useEffect(() => {
+    if (tab === 0) {
+      // Video tab: show only formats with AAC/mp4 audio
+      setFilterModel({
+        items: [{ id: 1, field: 'acodec', operator: 'contains', value: 'mp4' }]
+      });
+    } else {
+      // Audio tab: clear filter (or set something else later)
+      setFilterModel({ items: [] });
+    }
+  }, [tab]);
+
   useEffect(() => {
     if (!hasElectron || !window.electronAPI.onYtProgress) return;
     const unsub = window.electronAPI.onYtProgress((p) => setProgress(p));
@@ -241,14 +257,8 @@ export default function YouTubeDownloaderPage() {
           // Video: MP4 / MOV / Original
           return (
             <ButtonGroup size="small" variant="contained" disabled={downloading}>
-              <Button onClick={() => handleDownload({ formatId, kind: 'video', outFormat: 'mp4' })}>
-                MP4
-              </Button>
-              <Button onClick={() => handleDownload({ formatId, kind: 'video', outFormat: 'mov' })}>
-                MOV
-              </Button>
               <Button onClick={() => handleDownload({ formatId, kind: 'video', outFormat: 'original' })}>
-                Orig
+                SAVE
               </Button>
             </ButtonGroup>
           );
@@ -343,6 +353,8 @@ export default function YouTubeDownloaderPage() {
                 quickFilterProps: { debounceMs: 300 }
               }
             }}
+            filterModel={filterModel}
+            onFilterModelChange={setFilterModel}
           />
         </Box>
       </Stack>

@@ -44,6 +44,14 @@ contextBridge.exposeInMainWorld('electronAPI', {
     return () => ipcRenderer.removeListener('ytdlp:progress', listener);
   },
 
+  chooseYtFolder: async () => ipcRenderer.invoke('yt:chooseFolder'),
+runYt: async (payload) => ipcRenderer.invoke('yt:run', payload),
+onYtLog: (callback) => {
+  const listener = (_event, line) => callback(line);
+  ipcRenderer.on('yt:log', listener);
+  return () => ipcRenderer.removeListener('yt:log', listener);
+},
+
 
 
   

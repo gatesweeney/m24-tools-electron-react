@@ -16,7 +16,8 @@ const pages = [
   { label: 'OffShoot Logs', path: '/offshoot-logs' },
   { label: 'Indexer', path: '/indexer' },
   { label: 'Search', path: '/search' },
-  { label: 'YouTube', path: '/youtube' }
+  { label: 'YouTube', path: '/youtube' },
+  { label: 'YouTube Simple', path: '/youtube-simple' }
 ];
 
 function NavBar() {

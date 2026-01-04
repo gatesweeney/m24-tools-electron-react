@@ -1,9 +1,18 @@
 const path = require('path');
+const { resolveBin } = require('./binPath');
 const fs = require('fs');
 const { spawn } = require('child_process');
 const os = require('os');
 
 console.log('[yt-dlp] module loaded');
+
+const ytDlpPath = resolveBin('bin/yt-dlp-macos-arm64');
+const ffmpegPath = resolveBin('bin/ffmpeg-macos-arm64');
+const ffprobePath = resolveBin('bin/ffprobe-macos-arm64');
+
+if (!ytDlpPath) throw new Error('yt-dlp binary missing');
+if (!ffmpegPath) throw new Error('ffmpeg binary missing');
+if (!ffprobePath) throw new Error('ffprobe binary missing');
 
 function isFile(p) {
   try {

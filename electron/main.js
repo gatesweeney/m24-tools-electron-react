@@ -1,9 +1,24 @@
 const { app, BrowserWindow, ipcMain, dialog } = require('electron');
 const path = require('path');
+const fs = require('fs');
+const shell = require('electron').shell;
+const { spawn } = require('child_process');
+const os = require('os');
 const { runProxyJob } = require('./fs-ops');
 const { scanOffshootLogs } = require('./offshoot-logs');
 const { getIndexerState, scanNow, searchFiles } = require('../indexer/uiApi');
 const { getInfoJson, normalizeFormats, downloadWithFormat } = require('./ytdlp');
+const { resolveBin } = require('./binPath');
+
+const ytDlpPath = resolveBin('bin/yt-dlp-macos-arm64');
+const ffmpegPath = resolveBin('bin/ffmpeg-macos-arm64');
+const ffprobePath = resolveBin('bin/ffprobe-macos-arm64');
+
+if (!ytDlpPath) throw new Error('yt-dlp binary missing');
+if (!ffmpegPath) throw new Error('ffmpeg binary missing');
+if (!ffprobePath) throw new Error('ffprobe binary missing');
+
+const ffmpegDir = path.dirname(ffmpegPath);
 
 const isDev = !app.isPackaged;
 let mainWindow;
@@ -178,3 +193,98 @@ ipcMain.handle('ytdlp:download', async (evt, payload) => {
     return { ok: false, error: err.message || String(err) };
   }
 });
+
+ipcMain.handle('yt:chooseFolder', async () => {
+  const res = await dialog.showOpenDialog({
+    properties: ['openDirectory', 'createDirectory']
+  });
+  if (res.canceled || !res.filePaths?.[0]) return { ok: true, folder: null };
+  return { ok: true, folder: res.filePaths[0] };
+});
+
+ipcMain.handle('yt:run', async (evt, payload) => {
+  try {
+    const wc = evt.sender;
+    const { url, mode, folder } = payload;
+
+    if (!url || !mode) return { ok: false, error: 'Missing url or mode.' };
+
+    const destDir = folder && folder.trim()
+      ? expandHome(folder.trim())
+      : path.join(os.homedir(), 'Downloads');
+
+    // Basic validation
+    if (!destDir) return { ok: false, error: 'Invalid destination folder.' };
+
+    const format = mode === 'video' ? "(bv*[vcodec~='^((he|a)vc|h26[45])']+ba) / (bv*+ba/b) --merge-output-format mp4 --recode-video=mp4" : 'ba';
+    const args = ['--ffmpeg-location', ffmpegDir, '-f', format, url];
+
+    // Important: make sure PATH includes common brew dirs for packaged app
+    const env = {
+      ...process.env,
+      PATH: [
+        process.env.PATH || '',
+        '/opt/homebrew/bin',
+        '/usr/local/bin',
+        '/usr/bin',
+        '/bin',
+        '/usr/sbin',
+        '/sbin'
+      ].filter(Boolean).join(':')
+    };
+
+    wc.send('yt:log', `[yt] Running: yt-dlp ${args.join(' ')}`);
+    wc.send('yt:log', `[yt] Saving to: ${destDir}`);
+
+    const ytDlpPath = getBundledYtDlpPath();
+    if (!ytDlpPath) {
+      return { ok: false, error: 'Bundled yt-dlp binary not found.' };
+    }
+
+    console.log('[yt] using yt-dlp:', ytDlpPath);
+
+    const p = spawn(ytDlpPath, args, {
+      cwd: destDir,
+      env,
+      stdio: ['ignore', 'pipe', 'pipe']
+    });
+
+    p.stdout.on('data', (d) => wc.send('yt:log', d.toString()));
+    p.stderr.on('data', (d) => wc.send('yt:log', d.toString()));
+
+    return await new Promise((resolve) => {
+      p.on('close', (code) => {
+        if (code === 0) resolve({ ok: true });
+        else resolve({ ok: false, error: `yt-dlp exited with code ${code}` });
+      });
+    });
+  } catch (err) {
+    return { ok: false, error: err.message || String(err) };
+  }
+});
+
+function expandHome(p) {
+  if (!p) return p;
+  if (p === '~') return os.homedir();
+  if (p.startsWith('~/')) return path.join(os.homedir(), p.slice(2));
+  return p;
+}
+
+function getBundledYtDlpPath() {
+  // dev path (repo)
+  const devCandidate = path.join(__dirname, 'bin', 'yt-dlp-macos-arm64');
+
+  // packaged path: if running inside app.asar, use app.asar.unpacked
+  const packagedCandidate = devCandidate.includes('app.asar')
+    ? devCandidate.replace('app.asar', 'app.asar.unpacked')
+    : devCandidate;
+
+  const candidate = app.isPackaged ? packagedCandidate : devCandidate;
+
+  if (fs.existsSync(candidate)) {
+    try { fs.chmodSync(candidate, 0o755); } catch {}
+    return candidate;
+  }
+
+  return null;
+}
