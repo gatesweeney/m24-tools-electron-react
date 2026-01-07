@@ -1,35 +1,18 @@
-// src/pages/IndexerPage.js
 import React, { useEffect, useState } from 'react';
 import Container from '@mui/material/Container';
 import Box from '@mui/material/Box';
 import Stack from '@mui/material/Stack';
 import Typography from '@mui/material/Typography';
 import Button from '@mui/material/Button';
-import Table from '@mui/material/Table';
-import TableHead from '@mui/material/TableHead';
-import TableBody from '@mui/material/TableBody';
-import TableRow from '@mui/material/TableRow';
-import TableCell from '@mui/material/TableCell';
-import Collapse from '@mui/material/Collapse';
-import IconButton from '@mui/material/IconButton';
-import LinearProgress from '@mui/material/LinearProgress';
 import Alert from '@mui/material/Alert';
-import KeyboardArrowDownIcon from '@mui/icons-material/KeyboardArrowDown';
-import KeyboardArrowUpIcon from '@mui/icons-material/KeyboardArrowUp';
+import LinearProgress from '@mui/material/LinearProgress';
+import IndexerSettingsModal from '../components/IndexerSettingsModal';
+import { DataGridPro, GridToolbar } from '@mui/x-data-grid-pro';
+import Tooltip from '@mui/material/Tooltip';
+import IconButton from '@mui/material/IconButton';
+import PlayArrowIcon from '@mui/icons-material/PlayArrow';
 
-const hasElectron = typeof window !== 'undefined' && window.electronAPI;
-
-function formatBytes(bytes) {
-  if (!bytes && bytes !== 0) return '—';
-  const units = ['B', 'KB', 'MB', 'GB', 'TB', 'PB'];
-  let v = bytes;
-  let u = 0;
-  while (v >= 1024 && u < units.length - 1) {
-    v /= 1024;
-    u++;
-  }
-  return `${v.toFixed(1)} ${units[u]}`;
-}
+const hasElectron = typeof window !== 'undefined' && !!window.electronAPI;
 
 function formatDate(iso) {
   if (!iso) return '—';
@@ -38,223 +21,176 @@ function formatDate(iso) {
   return d.toLocaleString();
 }
 
-function formatInterval(ms) {
-  if (ms == null) return 'default';
-  if (ms < 0) return 'manual only';
-  const s = Math.floor(ms / 1000);
-  if (s < 60) return `${s}s`;
-  const m = Math.floor(s / 60);
-  if (m < 60) return `${m} min`;
-  const h = Math.floor(m / 60);
-  if (h < 24) return `${h} hr`;
-  const d = Math.floor(h / 24);
-  return `${d} day${d !== 1 ? 's' : ''}`;
+function formatBytes(bytes) {
+  if (bytes == null || Number.isNaN(bytes)) return '—';
+  if (bytes === 0) return '0 B';
+
+  const k = 1024;
+  const sizes = ['B', 'KB', 'MB', 'GB', 'TB', 'PB'];
+  const i = Math.floor(Math.log(bytes) / Math.log(k));
+
+  const value = bytes / Math.pow(k, i);
+  return `${value.toFixed(value >= 10 ? 0 : 1)} ${sizes[i]}`;
 }
 
-function IndexerPage() {
-  const [state, setState] = useState({ drives: [], roots: [] });
+export default function IndexerPage() {
+  const [settingsOpen, setSettingsOpen] = useState(false);
   const [loading, setLoading] = useState(false);
-  const [scanBusy, setScanBusy] = useState(false);
   const [error, setError] = useState(null);
-  const [openDriveIds, setOpenDriveIds] = useState({});
+  const [state, setState] = useState({ drives: [], roots: [] });
 
-  const loadState = async () => {
-    if (!hasElectron) {
-      setError('Indexer UI only works in Electron.');
+  const load = async () => {
+    if (!hasElectron || !window.electronAPI.getIndexerState) {
+      setError('Indexer requires Electron + preload APIs.');
       return;
     }
     try {
       setLoading(true);
       const res = await window.electronAPI.getIndexerState();
-      if (!res.ok) {
-        setError(res.error || 'Failed to load indexer state');
-      } else {
+      if (!res.ok) setError(res.error || 'Failed to load indexer state');
+      else {
         setState(res.state || { drives: [], roots: [] });
         setError(null);
       }
-    } catch (err) {
-      setError(err.message || String(err));
+    } catch (e) {
+      setError(e.message || String(e));
     } finally {
       setLoading(false);
     }
   };
 
   useEffect(() => {
-    loadState();
+    load();
   }, []);
 
-  const toggleDriveOpen = (id) => {
-    setOpenDriveIds((prev) => ({ ...prev, [id]: !prev[id] }));
-  };
+  const driveRows = (state.drives || []).map((d, idx) => ({ id: d.volume_uuid || idx, ...d }));
 
-  const handleScanNow = async (rootPath) => {
-    if (!hasElectron) return;
-    try {
-      setScanBusy(true);
-      const res = await window.electronAPI.scanIndexerRoot(rootPath);
-      if (!res.ok) {
-        setError(res.error || 'Scan failed');
-      } else {
-        await loadState();
-      }
-    } catch (err) {
-      setError(err.message || String(err));
-    } finally {
-      setScanBusy(false);
+  const columns = [
+    { field: 'volume_name', headerName: 'Name', flex: 1, minWidth: 180 },
+    { field: 'mount_point_last', headerName: 'Mount', flex: 1.2, minWidth: 220 },
+    { field: 'volume_uuid', headerName: 'Volume UUID', flex: 1.2, minWidth: 260 },
+    {
+      field: 'is_active',
+      headerName: 'Active',
+      width: 90,
+      valueGetter: (p) => (p.row.is_active ? 'Yes' : 'No')
+    },
+    {
+      field: 'last_scan_at',
+      headerName: 'Last Scan',
+      width: 180,
+      valueGetter: (p) => formatDate(p.row.last_scan_at)
     }
-  };
-
-  const { drives, roots } = state;
-
-  // Join roots by drive_uuid
-  const rootsByDrive = roots.reduce((acc, root) => {
-    const key = root.drive_uuid || '__no_drive__';
-    if (!acc[key]) acc[key] = [];
-    acc[key].push(root);
-    return acc;
-  }, {});
+    ,
+    {
+      field: 'actions',
+      headerName: 'Actions',
+      width: 120,
+      sortable: false,
+      filterable: false,
+      renderCell: (params) => (
+        <Tooltip title="Scan this volume now">
+          <span>
+            <IconButton
+              size="small"
+              disabled={!window.electronAPI?.scanIndexerRoot || !params.row.mount_point_last}
+              onClick={async (e) => {
+                e.stopPropagation();
+                try {
+                  setLoading(true);
+                  await window.electronAPI.scanIndexerRoot(params.row.mount_point_last);
+                  await load();
+                } finally {
+                  setLoading(false);
+                }
+              }}
+            >
+              <PlayArrowIcon fontSize="small" />
+            </IconButton>
+          </span>
+        </Tooltip>
+      )
+    }
+  ];
 
   return (
     <Container maxWidth="xl" sx={{ pt: 4, pb: 6 }}>
-      <Stack spacing={3}>
+      <Stack spacing={2}>
         <Stack direction="row" justifyContent="space-between" alignItems="center">
           <Box>
             <Typography variant="h4">Indexer</Typography>
             <Typography variant="body2" color="text.secondary">
-              View indexed drives and roots, trigger scans, and inspect basic metadata.
+              Drives + manual roots + background service controls.
             </Typography>
           </Box>
           <Box>
-            <Button
-              variant="outlined"
-              onClick={loadState}
-              disabled={loading || scanBusy}
-              sx={{ mr: 1 }}
-            >
+            <Button variant="outlined" onClick={load} sx={{ mr: 1 }} disabled={loading}>
               Refresh
             </Button>
             <Button
               variant="contained"
-              onClick={() => handleScanNow(null)}
-              disabled={scanBusy}
+              onClick={async () => {
+                try {
+                  setLoading(true);
+                  await window.electronAPI.scanAllNow();
+                    await load();
+                } finally {
+                  setLoading(false);
+                }
+              }}
+              sx={{ mr: 1 }}
+              disabled={loading || !window.electronAPI?.scanIndexerRoot}
             >
               Scan All Now
+            </Button>
+            <Button variant="contained" onClick={() => setSettingsOpen(true)}>
+              Settings
             </Button>
           </Box>
         </Stack>
 
         {loading && <LinearProgress />}
+        {error && <Alert severity="error">{error}</Alert>}
 
-        {error && (
-          <Alert severity="error" onClose={() => setError(null)}>
-            {error}
-          </Alert>
-        )}
+        <Box sx={{ height: 520, width: '100%', bgcolor: 'background.paper', borderRadius: 2 }}>
+          <DataGridPro
+            rows={driveRows}
+            columns={columns}
+            disableRowSelectionOnClick
+            slots={{ toolbar: GridToolbar }}
+            slotProps={{
+              toolbar: { showQuickFilter: true, quickFilterProps: { debounceMs: 300 } }
+            }}
+            initialState={{
+              sorting: { sortModel: [{ field: 'last_scan_at', sort: 'desc' }] }
+            }}
+          />
+        </Box>
 
-        {drives.length === 0 ? (
-          <Alert severity="info">
-            No drives found yet. Plug in an external drive or run the indexer to populate data.
-          </Alert>
-        ) : (
-          <Table size="small">
-            <TableHead>
-              <TableRow>
-                <TableCell />
-                <TableCell>Drive Name</TableCell>
-                <TableCell>UUID</TableCell>
-                <TableCell>Mount Point</TableCell>
-                <TableCell>Size</TableCell>
-                <TableCell>Last Scan</TableCell>
-                <TableCell>Location</TableCell>
-              </TableRow>
-            </TableHead>
-            <TableBody>
-              {drives.map((drive) => {
-                const isOpen = !!openDriveIds[drive.id];
-                const driveRoots = rootsByDrive[drive.volume_uuid] || [];
-                return (
-                  <React.Fragment key={drive.id}>
-                    <TableRow hover>
-                      <TableCell padding="checkbox">
-                        <IconButton
-                          size="small"
-                          onClick={() => toggleDriveOpen(drive.id)}
-                        >
-                          {isOpen ? <KeyboardArrowUpIcon /> : <KeyboardArrowDownIcon />}
-                        </IconButton>
-                      </TableCell>
-                      <TableCell>{drive.primary_name || '(unnamed)'}</TableCell>
-                      <TableCell>{drive.volume_uuid || '—'}</TableCell>
-                      <TableCell>{drive.mount_point || '—'}</TableCell>
-                      <TableCell>{formatBytes(drive.size_bytes)}</TableCell>
-                      <TableCell>{formatDate(drive.last_scan_at)}</TableCell>
-                      <TableCell>{drive.location_note || '—'}</TableCell>
-                    </TableRow>
+        <Box sx={{ height: 320, width: '100%', bgcolor: 'background.paper', borderRadius: 2 }}>
+        <DataGridPro
+            rows={(state.roots || []).map((r, idx) => ({ id: r.id || r.path || idx, ...r }))}
+            columns={[
+            { field: 'label', headerName: 'Label', width: 160, valueGetter: (p) => p.row.label || '—' },
+            { field: 'path', headerName: 'Path', flex: 1, minWidth: 320 },
+            { field: 'is_active', headerName: 'Active', width: 90, valueGetter: (p) => (p.row.is_active ? 'Yes' : 'No') },
+            { field: 'file_count', headerName: 'Files', width: 90, type: 'number' },
+            { field: 'dir_count', headerName: 'Dirs', width: 90, type: 'number' },
+            { field: 'total_bytes', headerName: 'Bytes', width: 140, valueGetter: (p) => formatBytes(p.row.total_bytes) },
+            { field: 'scan_interval_ms', headerName: 'Interval', width: 140 },
+            { field: 'last_scan_at', headerName: 'Last Scan', width: 180, valueGetter: (p) => formatDate(p.row.last_scan_at) }
+            ]}
+            disableRowSelectionOnClick
+            slots={{ toolbar: GridToolbar }}
+        />
+        </Box>
 
-                    <TableRow>
-                      <TableCell colSpan={7} sx={{ py: 0 }}>
-                        <Collapse in={isOpen} timeout="auto" unmountOnExit>
-                          <Box sx={{ p: 2, bgcolor: 'background.default' }}>
-                            <Typography variant="subtitle1" sx={{ mb: 1 }}>
-                              Watched Roots
-                            </Typography>
-                            {driveRoots.length === 0 ? (
-                              <Typography
-                                variant="body2"
-                                color="text.secondary"
-                              >
-                                No active roots associated with this drive.
-                              </Typography>
-                            ) : (
-                              <Table size="small">
-                                <TableHead>
-                                  <TableRow>
-                                    <TableCell>Root Path</TableCell>
-                                    <TableCell>Label</TableCell>
-                                    <TableCell>Active</TableCell>
-                                    <TableCell>Mode</TableCell>
-                                    <TableCell>Scan Interval</TableCell>
-                                    <TableCell>Last Scan</TableCell>
-                                    <TableCell>Actions</TableCell>
-                                  </TableRow>
-                                </TableHead>
-                                <TableBody>
-                                  {driveRoots.map((root) => (
-                                    <TableRow key={root.id}>
-                                      <TableCell>{root.root_path}</TableCell>
-                                      <TableCell>{root.label || '—'}</TableCell>
-                                      <TableCell>{root.is_active ? 'Yes' : 'No'}</TableCell>
-                                      <TableCell>{root.deep_scan_mode || 'none'}</TableCell>
-                                      <TableCell>{formatInterval(root.scan_interval_ms)}</TableCell>
-                                      <TableCell>{formatDate(root.last_scan_at)}</TableCell>
-                                      <TableCell>
-                                        <Button
-                                          size="small"
-                                          variant="outlined"
-                                          disabled={scanBusy}
-                                          onClick={() => handleScanNow(root.root_path)}
-                                        >
-                                          Scan Now
-                                        </Button>
-                                      </TableCell>
-                                    </TableRow>
-                                  ))}
-                                </TableBody>
-                              </Table>
-                            )}
-                          </Box>
-                        </Collapse>
-                      </TableCell>
-                    </TableRow>
-                  </React.Fragment>
-                );
-              })}
-            </TableBody>
-          </Table>
-        )}
+        <IndexerSettingsModal
+          open={settingsOpen}
+          onClose={() => setSettingsOpen(false)}
+          onStateChanged={(st) => setState(st)}
+        />
       </Stack>
     </Container>
   );
 }
-
-export default IndexerPage;

@@ -53,6 +53,48 @@ onYtLog: (callback) => {
 },
 
 
+indexerServiceStatus: async () => ipcRenderer.invoke('indexerService:status'),
+indexerServiceInstall: async () => ipcRenderer.invoke('indexerService:install'),
+indexerServiceUninstall: async () => ipcRenderer.invoke('indexerService:uninstall'),
+indexerServiceRestart: async () => ipcRenderer.invoke('indexerService:restart'),
+
+// Indexer state + settings
+getIndexerState: async () => ipcRenderer.invoke('indexer:getState'),
+
+indexerSetVolumeActive: async (volumeUuid, isActive) =>
+  ipcRenderer.invoke('indexer:setVolumeActive', volumeUuid, isActive),
+
+indexerSetVolumeInterval: async (volumeUuid, intervalMs) =>
+  ipcRenderer.invoke('indexer:setVolumeInterval', volumeUuid, intervalMs),
+
+indexerAddManualRoot: async (rootPath) =>
+  ipcRenderer.invoke('indexer:addManualRoot', rootPath),
+
+indexerSetManualRootActive: async (rootId, isActive) =>
+  ipcRenderer.invoke('indexer:setManualRootActive', rootId, isActive),
+
+indexerSetManualRootInterval: async (rootId, intervalMs) =>
+  ipcRenderer.invoke('indexer:setManualRootInterval', rootId, intervalMs),
+
+indexerRemoveManualRoot: async (rootId) =>
+  ipcRenderer.invoke('indexer:removeManualRoot', rootId),
+
+scanIndexerNow: async (target) =>
+  ipcRenderer.invoke('indexer:scanNow', target),
+
+scanAllNow: async () => ipcRenderer.invoke('indexer:scanAllNow'),
+scanVolumeNow: async (volumeUuid) => ipcRenderer.invoke('indexer:scanVolumeNow', volumeUuid),
+scanManualRootNow: async (rootId) => ipcRenderer.invoke('indexer:scanManualRootNow', rootId),
+
+onIndexerProgress: (callback) => {
+  const listener = (_event, data) => callback(data);
+  ipcRenderer.on('indexer:progress', listener);
+  return () => ipcRenderer.removeListener('indexer:progress', listener);
+},
+
+getIndexerStatus: async () => ipcRenderer.invoke('indexer:status'),
+cancelIndexerAll: async () => ipcRenderer.invoke('indexer:cancelAll'),
+cancelIndexerKey: async (key) => ipcRenderer.invoke('indexer:cancelKey', key),
 
   
 });

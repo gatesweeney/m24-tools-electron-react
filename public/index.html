@@ -9,5 +9,49 @@
   <body>
     <noscript>You need to enable JavaScript to run this app.</noscript>
     <div id="root"></div>
+
+    <script>
+(function () {
+  const TARGET_TEXT = 'MUI X: Missing license key';
+
+  function removeMuiWatermark(node = document) {
+    const divs = node.querySelectorAll ? node.querySelectorAll('div') : [];
+    for (const el of divs) {
+      if (
+        el.textContent &&
+        el.textContent.trim() === TARGET_TEXT &&
+        el.style.pointerEvents === 'none'
+      ) {
+        el.remove();
+      }
+    }
+  }
+
+  // Run ASAP (before React mounts)
+  removeMuiWatermark();
+
+  // Run at DOM ready (still before full load)
+  document.addEventListener('DOMContentLoaded', () => {
+    removeMuiWatermark();
+  });
+
+  // Observe DOM mutations and remove instantly on injection
+  const observer = new MutationObserver((mutations) => {
+    for (const m of mutations) {
+      for (const n of m.addedNodes) {
+        if (n.nodeType === 1) removeMuiWatermark(n);
+      }
+    }
+  });
+
+  observer.observe(document.documentElement, {
+    childList: true,
+    subtree: true
+  });
+
+  // Stop observing after a short window (avoid long-term overhead)
+  setTimeout(() => observer.disconnect(), 5000);
+})();
+</script>
   </body>
 </html>

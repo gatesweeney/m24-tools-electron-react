@@ -4,7 +4,6 @@ import AppBar from '@mui/material/AppBar';
 import Box from '@mui/material/Box';
 import Toolbar from '@mui/material/Toolbar';
 import IconButton from '@mui/material/IconButton';
-import Typography from '@mui/material/Typography';
 import Button from '@mui/material/Button';
 import HomeIcon from '@mui/icons-material/Home';
 
@@ -13,11 +12,9 @@ const pages = [
   { label: 'Proxy Tool', path: '/proxy' },
   { label: 'HEIC Converter', path: '/heic-converter' },
   { label: 'Image Compressor', path: '/image-compressor' },
-  { label: 'OffShoot Logs', path: '/offshoot-logs' },
-  { label: 'Indexer', path: '/indexer' },
-  { label: 'Search', path: '/search' },
   { label: 'YouTube', path: '/youtube' },
-  { label: 'YouTube Simple', path: '/youtube-simple' }
+  { label: 'YouTube Simple', path: '/youtube-simple' },
+  { label: 'Indexer', path: '/indexer' }
 ];
 
 function NavBar() {

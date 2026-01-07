@@ -5,10 +5,13 @@ const shell = require('electron').shell;
 const { spawn } = require('child_process');
 const os = require('os');
 const { runProxyJob } = require('./fs-ops');
-const { scanOffshootLogs } = require('./offshoot-logs');
-const { getIndexerState, scanNow, searchFiles } = require('../indexer/uiApi');
 const { getInfoJson, normalizeFormats, downloadWithFormat } = require('./ytdlp');
 const { resolveBin } = require('./binPath');
+const { startIndexerWorker } = require('./workerLauncher');
+const indexerService = require('./indexerService');
+const indexerQueries = require('../indexer/worker/db/queries');
+const worker = require('../indexer/worker/main');
+const { sendWorkerMessage, getLatestIndexerStatus, onWorkerMessage } = require('./workerLauncher');
 
 const ytDlpPath = resolveBin('bin/yt-dlp-macos-arm64');
 const ffmpegPath = resolveBin('bin/ffmpeg-macos-arm64');
@@ -39,6 +42,14 @@ function createWindow() {
   title: 'M24 Tools'
 });
 
+onWorkerMessage((msg) => {
+  if (!mainWindow || mainWindow.isDestroyed()) return;
+
+  if (msg && msg.cmd === 'indexerProgress') {
+    mainWindow.webContents.send('indexer:progress', msg);
+  }
+});
+
   if (isDev) {
     // In dev, load the React dev server
     mainWindow.loadURL('http://localhost:3000');
@@ -64,6 +75,8 @@ app.whenReady().then(() => {
   app.setName('M24 Tools');
 
   createWindow();
+
+  startIndexerWorker();
 
   if (mainWindow) {
     mainWindow.setTitle('M24 Tools');
@@ -101,15 +114,6 @@ ipcMain.handle('proxy:start', async (event, config) => {
   }
 });
 
-ipcMain.handle('offshoot:scan', async (event, rootFolder) => {
-  try {
-    const results = await scanOffshootLogs(rootFolder);
-    return { ok: true, results };
-  } catch (err) {
-    return { ok: false, error: err.message || String(err) };
-  }
-});
-
 
 // Open file or reveal path in Finder
 ipcMain.handle('fs:showItem', async (event, filePath) => {
@@ -119,36 +123,6 @@ ipcMain.handle('fs:showItem', async (event, filePath) => {
     return { ok: true };
   } catch (err) {
     console.error('Error showing item in folder:', err);
-    return { ok: false, error: err.message || String(err) };
-  }
-});
-
-ipcMain.handle('indexer:getState', async () => {
-  try {
-    const state = await getIndexerState();
-    return { ok: true, state };
-  } catch (err) {
-    console.error('[indexer] getState error:', err);
-    return { ok: false, error: err.message || String(err) };
-  }
-});
-
-ipcMain.handle('indexer:scanNow', async (event, rootPath) => {
-  try {
-    const result = await scanNow(rootPath);
-    return { ok: true, result };
-  } catch (err) {
-    console.error('[indexer] scanNow error:', err);
-    return { ok: false, error: err.message || String(err) };
-  }
-});
-
-ipcMain.handle('indexer:searchFiles', async (event, query, limit) => {
-  try {
-    const results = await searchFiles(query, limit || 200);
-    return { ok: true, results };
-  } catch (err) {
-    console.error('[indexer] searchFiles error:', err);
     return { ok: false, error: err.message || String(err) };
   }
 });
@@ -216,7 +190,7 @@ ipcMain.handle('yt:run', async (evt, payload) => {
     // Basic validation
     if (!destDir) return { ok: false, error: 'Invalid destination folder.' };
 
-    const format = mode === 'video' ? "(bv*[vcodec~='^((he|a)vc|h26[45])']+ba) / (bv*+ba/b) --merge-output-format mp4 --recode-video=mp4" : 'ba';
+    const format = mode === 'video' ? "bv*[vcodec^=avc1][ext=mp4]+ba[acodec^=mp4a][ext=m4a]/b[ext=mp4]/bv*[vcodec^=avc1]+ba[acodec^=mp4a]/bv*+ba/b --merge-output-format mp4 --recode-video=mp4" : 'ba';
     const args = ['--ffmpeg-location', ffmpegDir, '-f', format, url];
 
     // Important: make sure PATH includes common brew dirs for packaged app
@@ -261,6 +235,102 @@ ipcMain.handle('yt:run', async (evt, payload) => {
   } catch (err) {
     return { ok: false, error: err.message || String(err) };
   }
+});
+
+ipcMain.handle('indexerService:status', async () => indexerService.status());
+ipcMain.handle('indexerService:install', async () => indexerService.install());
+ipcMain.handle('indexerService:uninstall', async () => indexerService.uninstall());
+ipcMain.handle('indexerService:restart', async () => indexerService.restart());
+
+ipcMain.handle('indexer:getState', async () => {
+  try {
+    return { ok: true, state: indexerQueries.getIndexerState() };
+  } catch (e) {
+    return { ok: false, error: e.message || String(e) };
+  }
+});
+
+ipcMain.handle('indexer:setVolumeActive', async (_evt, volumeUuid, isActive) => {
+  try {
+    return { ok: true, state: indexerQueries.setVolumeActive(volumeUuid, isActive) };
+  } catch (e) {
+    return { ok: false, error: e.message || String(e) };
+  }
+});
+
+ipcMain.handle('indexer:setVolumeInterval', async (_evt, volumeUuid, intervalMs) => {
+  try {
+    return { ok: true, state: indexerQueries.setVolumeInterval(volumeUuid, intervalMs) };
+  } catch (e) {
+    return { ok: false, error: e.message || String(e) };
+  }
+});
+
+ipcMain.handle('indexer:addManualRoot', async (_evt, rootPath) => {
+  try {
+    return { ok: true, state: indexerQueries.addManualRoot(rootPath) };
+  } catch (e) {
+    return { ok: false, error: e.message || String(e) };
+  }
+});
+
+ipcMain.handle('indexer:setManualRootActive', async (_evt, rootId, isActive) => {
+  try {
+    return { ok: true, state: indexerQueries.setManualRootActive(rootId, isActive) };
+  } catch (e) {
+    return { ok: false, error: e.message || String(e) };
+  }
+});
+
+ipcMain.handle('indexer:setManualRootInterval', async (_evt, rootId, intervalMs) => {
+  try {
+    return { ok: true, state: indexerQueries.setManualRootInterval(rootId, intervalMs) };
+  } catch (e) {
+    return { ok: false, error: e.message || String(e) };
+  }
+});
+
+ipcMain.handle('indexer:removeManualRoot', async (_evt, rootId) => {
+  try {
+    return { ok: true, state: indexerQueries.removeManualRoot(rootId) };
+  } catch (e) {
+    return { ok: false, error: e.message || String(e) };
+  }
+});
+
+ipcMain.handle('indexer:scanAllNow', async () => {
+  const queued = sendWorkerMessage({ cmd: 'manualScan', payload: { type: 'scanAll' } });
+  return { ok: queued };
+});
+
+ipcMain.handle('indexer:scanVolumeNow', async (_evt, volumeUuid) => {
+  const queued = sendWorkerMessage({ cmd: 'manualScan', payload: { type: 'volume', volumeUuid } });
+  return { ok: queued };
+});
+
+ipcMain.handle('indexer:scanManualRootNow', async (_evt, rootId) => {
+  const queued = sendWorkerMessage({ cmd: 'manualScan', payload: { type: 'manualRoot', rootId } });
+  return { ok: queued };
+});
+
+ipcMain.handle('indexer:status', async () => {
+  // ask worker to send status; return the last known snapshot immediately after short delay
+  sendWorkerMessage({ cmd: 'indexerStatus' });
+
+  // small delay to allow worker to respond
+  await new Promise(r => setTimeout(r, 50));
+
+  return { ok: true, status: getLatestIndexerStatus() };
+});
+
+ipcMain.handle('indexer:cancelAll', async () => {
+  const ok = sendWorkerMessage({ cmd: 'indexerCancelAll' });
+  return { ok };
+});
+
+ipcMain.handle('indexer:cancelKey', async (_evt, key) => {
+  const ok = sendWorkerMessage({ cmd: 'indexerCancelKey', key });
+  return { ok };
 });
 
 function expandHome(p) {

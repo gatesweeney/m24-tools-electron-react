@@ -6,8 +6,12 @@
   "private": true,
   "build": {
     "appId": "com.m24.tools",
-    "mac": { "icon": "src/assets/webclip.icns" },
-    "win": { "icon": "src/assets/webclip.png" },
+    "mac": {
+      "icon": "src/assets/webclip.icns"
+    },
+    "win": {
+      "icon": "src/assets/webclip.png"
+    },
     "files": [
       "build/**/*",
       "electron/**/*",
@@ -33,6 +37,7 @@
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
     "react-router-dom": "^6.28.0",
+    "volta": "^0.0.0",
     "web-vitals": "^3.5.2"
   },
   "devDependencies": {
@@ -48,8 +53,11 @@
     "react-test": "react-scripts test",
     "react-eject": "react-scripts eject",
     "electron-start": "electron .",
+    "preinstall": "node -e \"const v=process.versions.node; if(!v.startsWith('22.12.0')){console.error('Use Node 22.12.0 (nvm use)');process.exit(1)}\"",
     "dev": "concurrently \"npm run react-start\" \"npm run electron-start\"",
-    "build": "npm run react-build"
+    "build": "npm run react-build",
+    "rebuild:sqlite:electron": "node ./scripts/rebuild-sqlite-electron.js",
+    "dist:mac": "npm run react-build && npm run rebuild:sqlite:electron && electron-builder --mac"
   },
   "eslintConfig": {
     "extends": [
@@ -79,5 +87,8 @@
   "license": "ISC",
   "bugs": {
     "url": "https://github.com/gatesweeney/m24-tools-electron-react/issues"
+  },
+  "engines": {
+    "node": "22.12.0"
   }
 }
