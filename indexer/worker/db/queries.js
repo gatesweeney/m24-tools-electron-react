@@ -1,7 +1,8 @@
 // indexer/worker/db/queries.js
 const { openDb } = require('./openDb');
+const { getMergedIndexerState } = require('./merge');
 
-function getIndexerState() {
+function getLocalIndexerState() {
   const db = openDb();
 
   const drives = db.prepare(`
@@ -17,8 +18,6 @@ function getIndexerState() {
   `).all();
 
   // Aggregate file stats per (volume_uuid, root_path)
-  // For volumes: root_path = mount_point_last
-  // For manual roots: we used volume_uuid = 'manual:<id>' and root_path = root path
   const statsByKey = new Map();
 
   const statsRows = db.prepare(`
@@ -55,34 +54,50 @@ function getIndexerState() {
     return { ...r, ...s };
   });
 
+  // Latest scan run per target
   const lastRuns = db.prepare(`
-  SELECT sr.*
-  FROM scan_runs sr
-  JOIN (
-    SELECT target_type, target_id, MAX(id) AS max_id
-    FROM scan_runs
-    GROUP BY target_type, target_id
-  ) latest
-  ON sr.id = latest.max_id
-`).all();
+    SELECT sr.*
+    FROM scan_runs sr
+    JOIN (
+      SELECT target_type, target_id, MAX(id) AS max_id
+      FROM scan_runs
+      GROUP BY target_type, target_id
+    ) latest
+    ON sr.id = latest.max_id
+  `).all();
 
-const runMap = new Map();
-for (const r of lastRuns) {
-  runMap.set(`${r.target_type}:${r.target_id}`, r);
-}
+  const runMap = new Map();
+  for (const r of lastRuns) {
+    runMap.set(`${r.target_type}:${r.target_id}`, r);
+  }
 
-const drivesWithRun = drivesWithStats.map(d => {
-  const r = runMap.get(`volume:${d.volume_uuid}`);
-  return { ...d, last_run_status: r?.status || null, last_run_duration_ms: r?.duration_ms || null };
-});
+  const drivesWithRun = drivesWithStats.map((d) => {
+    const r = runMap.get(`volume:${d.volume_uuid}`);
+    return {
+      ...d,
+      last_run_status: r?.status || null,
+      last_run_duration_ms: r?.duration_ms || null
+    };
+  });
 
-const rootsWithRun = rootsWithStats.map(r => {
-  const rr = runMap.get(`manualRoot:${r.id}`);
-  return { ...r, last_run_status: rr?.status || null, last_run_duration_ms: rr?.duration_ms || null };
-});
+  const rootsWithRun = rootsWithStats.map((r) => {
+    const rr = runMap.get(`manualRoot:${r.id}`);
+    return {
+      ...r,
+      last_run_status: rr?.status || null,
+      last_run_duration_ms: rr?.duration_ms || null
+    };
+  });
 
   db.close();
   return { drives: drivesWithRun, roots: rootsWithRun };
+}
+
+function getIndexerState() {
+  if (process.env.M24_MERGE_STATE === '1') {
+    return getMergedIndexerState();
+  }
+  return getLocalIndexerState();
 }
 
 function setVolumeActive(volumeUuid, isActive) {
@@ -150,12 +165,97 @@ function removeManualRoot(rootId) {
   return getIndexerState();
 }
 
+function disableVolume(volumeUuid) {
+  const db = openDb();
+  db.prepare(`
+    UPDATE volumes
+    SET is_active = 0
+    WHERE volume_uuid = ?
+  `).run(volumeUuid);
+  db.close();
+  return getIndexerState();
+}
+
+function disableAndDeleteVolumeData(volumeUuid) {
+  const db = openDb();
+
+  db.prepare(`
+    UPDATE volumes
+    SET is_active = 0
+    WHERE volume_uuid = ?
+  `).run(volumeUuid);
+
+  db.prepare(`DELETE FROM files WHERE volume_uuid = ?`).run(volumeUuid);
+  db.prepare(`
+    DELETE FROM scan_runs
+    WHERE target_type = 'volume' AND target_id = ?
+  `).run(volumeUuid);
+  db.prepare(`DELETE FROM offshoot_jobs WHERE volume_uuid = ?`).run(volumeUuid);
+  db.prepare(`DELETE FROM foolcat_reports WHERE volume_uuid = ?`).run(volumeUuid);
+
+  try { db.exec('PRAGMA wal_checkpoint(TRUNCATE);'); } catch {}
+  try { db.exec('VACUUM;'); } catch {}
+
+  db.close();
+  return getIndexerState();
+}
+
+function disableManualRoot(rootId) {
+  const db = openDb();
+  db.prepare(`
+    UPDATE manual_roots
+    SET is_active = 0
+    WHERE id = ?
+  `).run(rootId);
+  db.close();
+  return getIndexerState();
+}
+
+function disableAndDeleteManualRootData(rootId) {
+  const db = openDb();
+  const root = db.prepare(`SELECT path FROM manual_roots WHERE id = ?`).get(rootId);
+  if (!root) {
+    db.close();
+    return getIndexerState();
+  }
+
+  const volumeUuid = `manual:${rootId}`;
+  const rootPath = root.path;
+
+  db.prepare(`
+    UPDATE manual_roots
+    SET is_active = 0
+    WHERE id = ?
+  `).run(rootId);
+
+  db.prepare(`
+    DELETE FROM files
+    WHERE volume_uuid = ? AND root_path = ?
+  `).run(volumeUuid, rootPath);
+
+  db.prepare(`
+    DELETE FROM scan_runs
+    WHERE target_type = 'manualRoot' AND target_id = ?
+  `).run(rootId);
+
+  try { db.exec('PRAGMA wal_checkpoint(TRUNCATE);'); } catch {}
+  try { db.exec('VACUUM;'); } catch {}
+
+  db.close();
+  return getIndexerState();
+}
+
 module.exports = {
   getIndexerState,
+  getLocalIndexerState,
   setVolumeActive,
   setVolumeInterval,
   addManualRoot,
   setManualRootActive,
   setManualRootInterval,
-  removeManualRoot
+  removeManualRoot,
+  disableVolume,
+  disableAndDeleteVolumeData,
+  disableManualRoot,
+  disableAndDeleteManualRootData
 };

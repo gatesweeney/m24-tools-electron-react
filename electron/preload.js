@@ -23,18 +23,10 @@ contextBridge.exposeInMainWorld('electronAPI', {
     return await ipcRenderer.invoke('fs:showItem', filePath);
   },
 
-  // Indexer / OffShoot stuff (examples)...
-  getIndexerState: async () => {
-    return await ipcRenderer.invoke('indexer:getState');
-  },
-  scanIndexerRoot: async (rootPath) => {
-    return await ipcRenderer.invoke('indexer:scanNow', rootPath || null);
-  },
 
-  // 👇 THIS is the function SearchPage expects:
-  searchIndexerFiles: async (query, limit) => {
-    return await ipcRenderer.invoke('indexer:searchFiles', query, limit || 200);
-  },
+
+  searchQuery: async (query, opts) =>
+    ipcRenderer.invoke('search:query', query, opts || {}),
 
   getYtFormats: async (url) => ipcRenderer.invoke('ytdlp:getFormats', url),
   downloadYtFormat: async (payload) => ipcRenderer.invoke('ytdlp:download', payload),
@@ -79,6 +71,19 @@ indexerSetManualRootInterval: async (rootId, intervalMs) =>
 indexerRemoveManualRoot: async (rootId) =>
   ipcRenderer.invoke('indexer:removeManualRoot', rootId),
 
+  // X-button actions for Indexer page
+  indexerDisableVolume: async (volumeUuid) =>
+    ipcRenderer.invoke('indexer:disableVolume', volumeUuid),
+
+  indexerDisableAndDeleteVolumeData: async (volumeUuid) =>
+    ipcRenderer.invoke('indexer:disableAndDeleteVolumeData', volumeUuid),
+
+  indexerDisableManualRoot: async (rootId) =>
+    ipcRenderer.invoke('indexer:disableManualRoot', rootId),
+
+  indexerDisableAndDeleteManualRootData: async (rootId) =>
+    ipcRenderer.invoke('indexer:disableAndDeleteManualRootData', rootId),
+
 scanIndexerNow: async (target) =>
   ipcRenderer.invoke('indexer:scanNow', target),
 
@@ -94,6 +99,7 @@ onIndexerProgress: (callback) => {
 
 getIndexerStatus: async () => ipcRenderer.invoke('indexer:status'),
 cancelIndexerAll: async () => ipcRenderer.invoke('indexer:cancelAll'),
+cancelIndexerCurrent: async () => ipcRenderer.invoke('indexer:cancelCurrent'),
 cancelIndexerKey: async (key) => ipcRenderer.invoke('indexer:cancelKey', key),
 
   

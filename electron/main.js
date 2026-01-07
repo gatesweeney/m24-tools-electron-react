@@ -10,6 +10,7 @@ const { resolveBin } = require('./binPath');
 const { startIndexerWorker } = require('./workerLauncher');
 const indexerService = require('./indexerService');
 const indexerQueries = require('../indexer/worker/db/queries');
+const { searchIndexer } = require('../indexer/worker/db/search');
 const worker = require('../indexer/worker/main');
 const { sendWorkerMessage, getLatestIndexerStatus, onWorkerMessage } = require('./workerLauncher');
 
@@ -250,6 +251,15 @@ ipcMain.handle('indexer:getState', async () => {
   }
 });
 
+ipcMain.handle('search:query', async (_evt, q, opts) => {
+  try {
+    const results = searchIndexer(q, opts || {});
+    return { ok: true, results };
+  } catch (e) {
+    return { ok: false, error: e.message || String(e) };
+  }
+});
+
 ipcMain.handle('indexer:setVolumeActive', async (_evt, volumeUuid, isActive) => {
   try {
     return { ok: true, state: indexerQueries.setVolumeActive(volumeUuid, isActive) };
@@ -298,6 +308,38 @@ ipcMain.handle('indexer:removeManualRoot', async (_evt, rootId) => {
   }
 });
 
+ipcMain.handle('indexer:disableVolume', async (_evt, volumeUuid) => {
+  try {
+    return { ok: true, state: indexerQueries.disableVolume(volumeUuid) };
+  } catch (e) {
+    return { ok: false, error: e.message || String(e) };
+  }
+});
+
+ipcMain.handle('indexer:disableAndDeleteVolumeData', async (_evt, volumeUuid) => {
+  try {
+    return { ok: true, state: indexerQueries.disableAndDeleteVolumeData(volumeUuid) };
+  } catch (e) {
+    return { ok: false, error: e.message || String(e) };
+  }
+});
+
+ipcMain.handle('indexer:disableManualRoot', async (_evt, rootId) => {
+  try {
+    return { ok: true, state: indexerQueries.disableManualRoot(rootId) };
+  } catch (e) {
+    return { ok: false, error: e.message || String(e) };
+  }
+});
+
+ipcMain.handle('indexer:disableAndDeleteManualRootData', async (_evt, rootId) => {
+  try {
+    return { ok: true, state: indexerQueries.disableAndDeleteManualRootData(rootId) };
+  } catch (e) {
+    return { ok: false, error: e.message || String(e) };
+  }
+});
+
 ipcMain.handle('indexer:scanAllNow', async () => {
   const queued = sendWorkerMessage({ cmd: 'manualScan', payload: { type: 'scanAll' } });
   return { ok: queued };
@@ -325,6 +367,11 @@ ipcMain.handle('indexer:status', async () => {
 
 ipcMain.handle('indexer:cancelAll', async () => {
   const ok = sendWorkerMessage({ cmd: 'indexerCancelAll' });
+  return { ok };
+});
+
+ipcMain.handle('indexer:cancelCurrent', async () => {
+  const ok = sendWorkerMessage({ cmd: 'indexerCancelCurrent' });
   return { ok };
 });
 

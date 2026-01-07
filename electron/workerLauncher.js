@@ -4,8 +4,6 @@ const { spawn } = require('child_process');
 const fs = require('fs');
 const { app } = require('electron');
 const { getBundledBinDir } = require('./binResolver');
-const listeners = new Set();
-function onWorkerMessage(fn) { listeners.add(fn); return () => listeners.delete(fn); }
 
 let workerProc = null;
 
@@ -35,7 +33,8 @@ function startIndexerWorker() {
     ...process.env,
     M24_BIN_DIR: binDir,
     ELECTRON_RUN_AS_NODE: '1',
-    M24_WORKER_AUTOSTART: '1'
+    M24_WORKER_AUTOSTART: '1',
+    M24_MERGE_STATE: '1'
     };
 
   console.log('[worker] starting indexer worker');

@@ -401,18 +401,21 @@ process.on('message', (msg) => {
     if (process.send) {
       process.send({ cmd: 'manualScanResult', result, at: new Date().toISOString() });
     }
+    return;
   }
 
   if (msg.cmd === 'indexerStatus') {
-  const status = computeStatus();
-  if (process.send) process.send({ cmd: 'indexerStatus', status, at: isoNow() });
-}
+    const status = computeStatus();
+    if (process.send) process.send({ cmd: 'indexerStatus', status, at: isoNow() });
+    return;
+  }
 
   if (msg.cmd === 'indexerCancelAll') {
     mountQueueRef?.cancelAll?.();
     scheduledQueueRef?.cancelAll?.();
     const status = computeStatus();
     if (process.send) process.send({ cmd: 'indexerStatus', status, at: isoNow() });
+    return;
   }
 
   if (msg.cmd === 'indexerCancelKey' && msg.key) {
@@ -420,5 +423,14 @@ process.on('message', (msg) => {
     scheduledQueueRef?.cancel?.(msg.key);
     const status = computeStatus();
     if (process.send) process.send({ cmd: 'indexerStatus', status, at: isoNow() });
+    return;
+  }
+
+  if (msg.cmd === 'indexerCancelCurrent') {
+    const cancelledKey =
+      scheduledQueueRef?.cancelCurrent?.() ?? mountQueueRef?.cancelCurrent?.() ?? null;
+    const status = computeStatus();
+    if (process.send) process.send({ cmd: 'indexerStatus', status, cancelledKey, at: isoNow() });
+    return;
   }
 });

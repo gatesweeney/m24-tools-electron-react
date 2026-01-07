@@ -44,8 +44,26 @@ class ScanQueue {
   }
 
   getCounts() {
-  return { running: this.running.size, queued: this.queue.length };
-}
+    return { running: this.running.size, queued: this.queue.length };
+  }
+
+  getRunningKeys() {
+    return Array.from(this.running.keys());
+  }
+
+  cancelCurrent() {
+    const iterator = this.running.keys();
+    const firstKey = iterator.next().value;
+    if (!firstKey) {
+      return null;
+    }
+    const job = this.running.get(firstKey);
+    try {
+      job.cancel();
+    } catch {}
+    this.running.delete(firstKey);
+    return firstKey;
+  }
 
   cancelAll() {
     // cancel running

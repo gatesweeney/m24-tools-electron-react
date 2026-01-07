@@ -14,10 +14,11 @@ const pages = [
   { label: 'Image Compressor', path: '/image-compressor' },
   { label: 'YouTube', path: '/youtube' },
   { label: 'YouTube Simple', path: '/youtube-simple' },
-  { label: 'Indexer', path: '/indexer' }
+  { label: 'Indexer', path: '/indexer' },
+  { label: 'Search', path: '/search' }
 ];
 
-function NavBar() {
+export default function NavBar() {
   const location = useLocation();
 
     return (
@@ -75,5 +76,3 @@ function NavBar() {
     </AppBar>
   );
 }
-
-export default NavBar;

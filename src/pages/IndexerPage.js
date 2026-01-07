@@ -11,26 +11,28 @@ import { DataGridPro, GridToolbar } from '@mui/x-data-grid-pro';
 import Tooltip from '@mui/material/Tooltip';
 import IconButton from '@mui/material/IconButton';
 import PlayArrowIcon from '@mui/icons-material/PlayArrow';
+import { formatBytes, formatDuration, formatDateTime } from '../utils/formatters';
+import Dialog from '@mui/material/Dialog';
+import DialogTitle from '@mui/material/DialogTitle';
+import DialogContent from '@mui/material/DialogContent';
+import DialogActions from '@mui/material/DialogActions';
+import CloseIcon from '@mui/icons-material/Close';
 
 const hasElectron = typeof window !== 'undefined' && !!window.electronAPI;
 
-function formatDate(iso) {
-  if (!iso) return '—';
-  const d = new Date(iso);
-  if (Number.isNaN(d.getTime())) return '—';
-  return d.toLocaleString();
-}
-
-function formatBytes(bytes) {
-  if (bytes == null || Number.isNaN(bytes)) return '—';
-  if (bytes === 0) return '0 B';
-
-  const k = 1024;
-  const sizes = ['B', 'KB', 'MB', 'GB', 'TB', 'PB'];
-  const i = Math.floor(Math.log(bytes) / Math.log(k));
-
-  const value = bytes / Math.pow(k, i);
-  return `${value.toFixed(value >= 10 ? 0 : 1)} ${sizes[i]}`;
+function ResultChip({ status }) {
+  if (!status) return '—';
+  const map = {
+    success: { label: 'Success', color: 'success' },
+    cancelled: { label: 'Cancelled', color: 'warning' },
+    error: { label: 'Error', color: 'error' }
+  };
+  const cfg = map[status] || { label: status, color: 'default' };
+  return (
+    <Alert severity={cfg.color} sx={{ py: 0, px: 1, display: 'inline-flex' }}>
+      {cfg.label}
+    </Alert>
+  );
 }
 
 export default function IndexerPage() {
@@ -38,6 +40,8 @@ export default function IndexerPage() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
   const [state, setState] = useState({ drives: [], roots: [] });
+  const [confirmOpen, setConfirmOpen] = useState(false);
+  const [confirmTarget, setConfirmTarget] = useState(null); // { type: 'volume'|'root', id, name }
 
   const load = async () => {
     if (!hasElectron || !window.electronAPI.getIndexerState) {
@@ -59,6 +63,48 @@ export default function IndexerPage() {
     }
   };
 
+  const openConfirm = (target) => {
+    setConfirmTarget(target);
+    setConfirmOpen(true);
+  };
+
+  const closeConfirm = () => {
+    setConfirmOpen(false);
+    setConfirmTarget(null);
+  };
+
+  const doDisable = async () => {
+    if (!confirmTarget) return;
+    try {
+      setLoading(true);
+      if (confirmTarget.type === 'volume') {
+        await window.electronAPI.indexerDisableVolume?.(confirmTarget.id);
+      } else {
+        await window.electronAPI.indexerDisableManualRoot?.(confirmTarget.id);
+      }
+      await load();
+    } finally {
+      setLoading(false);
+      closeConfirm();
+    }
+  };
+
+  const doDisableAndDelete = async () => {
+    if (!confirmTarget) return;
+    try {
+      setLoading(true);
+      if (confirmTarget.type === 'volume') {
+        await window.electronAPI.indexerDisableAndDeleteVolumeData?.(confirmTarget.id);
+      } else {
+        await window.electronAPI.indexerDisableAndDeleteManualRootData?.(confirmTarget.id);
+      }
+      await load();
+    } finally {
+      setLoading(false);
+      closeConfirm();
+    }
+  };
+
   useEffect(() => {
     load();
   }, []);
@@ -70,6 +116,24 @@ export default function IndexerPage() {
     { field: 'mount_point_last', headerName: 'Mount', flex: 1.2, minWidth: 220 },
     { field: 'volume_uuid', headerName: 'Volume UUID', flex: 1.2, minWidth: 260 },
     {
+      field: 'seen_count',
+      headerName: 'Seen',
+      width: 80,
+      type: 'number',
+      valueGetter: (p) => p.row.seen_count ?? 1
+    },
+    {
+      field: 'seen_on',
+      headerName: 'Seen On',
+      width: 200,
+      valueGetter: (p) => {
+        const arr = p.row.seen_on;
+        if (!Array.isArray(arr) || arr.length === 0) return '—';
+        const s = arr.join(', ');
+        return s.length > 40 ? s.slice(0, 37) + '…' : s;
+      }
+    },
+    {
       field: 'is_active',
       headerName: 'Active',
       width: 90,
@@ -79,9 +143,20 @@ export default function IndexerPage() {
       field: 'last_scan_at',
       headerName: 'Last Scan',
       width: 180,
-      valueGetter: (p) => formatDate(p.row.last_scan_at)
-    }
-    ,
+      valueGetter: (p) => formatDateTime(p.row.last_scan_at)
+    },
+    {
+      field: 'last_run_status',
+      headerName: 'Last Result',
+      width: 130,
+      renderCell: (p) => <ResultChip status={p.row.last_run_status} />
+    },
+    {
+      field: 'last_run_duration_ms',
+      headerName: 'Duration',
+      width: 110,
+      valueGetter: (p) => formatDuration(p.row.last_run_duration_ms)
+    },
     {
       field: 'actions',
       headerName: 'Actions',
@@ -89,26 +164,46 @@ export default function IndexerPage() {
       sortable: false,
       filterable: false,
       renderCell: (params) => (
-        <Tooltip title="Scan this volume now">
-          <span>
-            <IconButton
-              size="small"
-              disabled={!window.electronAPI?.scanIndexerRoot || !params.row.mount_point_last}
-              onClick={async (e) => {
-                e.stopPropagation();
-                try {
-                  setLoading(true);
-                  await window.electronAPI.scanIndexerRoot(params.row.mount_point_last);
-                  await load();
-                } finally {
-                  setLoading(false);
-                }
-              }}
-            >
-              <PlayArrowIcon fontSize="small" />
-            </IconButton>
-          </span>
-        </Tooltip>
+        <Stack direction="row" spacing={1}>
+          <Tooltip title="Scan this volume now">
+            <span>
+              <IconButton
+                size="small"
+                disabled={!window.electronAPI?.scanVolumeNow || !params.row.volume_uuid}
+                onClick={async (e) => {
+                  e.stopPropagation();
+                  try {
+                    setLoading(true);
+                    await window.electronAPI.scanVolumeNow(params.row.volume_uuid);
+                    await load();
+                  } finally {
+                    setLoading(false);
+                  }
+                }}
+              >
+                <PlayArrowIcon fontSize="small" />
+              </IconButton>
+            </span>
+          </Tooltip>
+
+          <Tooltip title="Disable / Delete options">
+            <span>
+              <IconButton
+                size="small"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  openConfirm({
+                    type: 'volume',
+                    id: params.row.volume_uuid,
+                    name: params.row.volume_name || params.row.volume_uuid
+                  });
+                }}
+              >
+                <CloseIcon fontSize="small" />
+              </IconButton>
+            </span>
+          </Tooltip>
+        </Stack>
       )
     }
   ];
@@ -139,7 +234,7 @@ export default function IndexerPage() {
                 }
               }}
               sx={{ mr: 1 }}
-              disabled={loading || !window.electronAPI?.scanIndexerRoot}
+              disabled={loading || !window.electronAPI?.scanAllNow}
             >
               Scan All Now
             </Button>
@@ -173,12 +268,84 @@ export default function IndexerPage() {
             columns={[
             { field: 'label', headerName: 'Label', width: 160, valueGetter: (p) => p.row.label || '—' },
             { field: 'path', headerName: 'Path', flex: 1, minWidth: 320 },
+            {
+              field: 'seen_count',
+              headerName: 'Seen',
+              width: 80,
+              type: 'number',
+              valueGetter: (p) => p.row.seen_count ?? 1
+            },
+            {
+              field: 'seen_on',
+              headerName: 'Seen On',
+              width: 200,
+              valueGetter: (p) => {
+                const arr = p.row.seen_on;
+                if (!Array.isArray(arr) || arr.length === 0) return '—';
+                const s = arr.join(', ');
+                return s.length > 40 ? s.slice(0, 37) + '…' : s;
+              }
+            },
             { field: 'is_active', headerName: 'Active', width: 90, valueGetter: (p) => (p.row.is_active ? 'Yes' : 'No') },
             { field: 'file_count', headerName: 'Files', width: 90, type: 'number' },
             { field: 'dir_count', headerName: 'Dirs', width: 90, type: 'number' },
             { field: 'total_bytes', headerName: 'Bytes', width: 140, valueGetter: (p) => formatBytes(p.row.total_bytes) },
+            {
+              field: 'last_run_status',
+              headerName: 'Last Result',
+              width: 130,
+              renderCell: (p) => <ResultChip status={p.row.last_run_status} />
+            },
+            {
+              field: 'last_run_duration_ms',
+              headerName: 'Duration',
+              width: 110,
+              valueGetter: (p) => formatDuration(p.row.last_run_duration_ms)
+            },
             { field: 'scan_interval_ms', headerName: 'Interval', width: 140 },
-            { field: 'last_scan_at', headerName: 'Last Scan', width: 180, valueGetter: (p) => formatDate(p.row.last_scan_at) }
+            { field: 'last_scan_at', headerName: 'Last Scan', width: 180, valueGetter: (p) => formatDateTime(p.row.last_scan_at) },
+            {
+              field: 'actions',
+              headerName: 'Actions',
+              width: 120,
+              renderCell: (params) => (
+                <Stack direction="row" spacing={1}>
+                  <Tooltip title="Scan this root now">
+                    <IconButton
+                      size="small"
+                      onClick={async (e) => {
+                        e.stopPropagation();
+                        try {
+                          setLoading(true);
+                          await window.electronAPI.scanManualRootNow?.(params.row.id);
+                          await load();
+                        } finally {
+                          setLoading(false);
+                        }
+                      }}
+                    >
+                      <PlayArrowIcon fontSize="small" />
+                    </IconButton>
+                  </Tooltip>
+
+                  <Tooltip title="Disable / Delete options">
+                    <IconButton
+                      size="small"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        openConfirm({
+                          type: 'root',
+                          id: params.row.id,
+                          name: params.row.label || params.row.path
+                        });
+                      }}
+                    >
+                      <CloseIcon fontSize="small" />
+                    </IconButton>
+                  </Tooltip>
+                </Stack>
+              )
+            }
             ]}
             disableRowSelectionOnClick
             slots={{ toolbar: GridToolbar }}
@@ -190,6 +357,36 @@ export default function IndexerPage() {
           onClose={() => setSettingsOpen(false)}
           onStateChanged={(st) => setState(st)}
         />
+
+        <Dialog open={confirmOpen} onClose={closeConfirm} maxWidth="sm" fullWidth>
+          <DialogTitle>Remove from scanning</DialogTitle>
+          <DialogContent dividers>
+            <Typography variant="body2" color="text.secondary">
+              {confirmTarget
+                ? `What do you want to do with: ${confirmTarget.name}?`
+                : 'Select an item.'}
+            </Typography>
+          </DialogContent>
+          <DialogActions>
+            <Button onClick={closeConfirm}>Close</Button>
+            <Button
+              variant="outlined"
+              color="warning"
+              onClick={doDisable}
+              disabled={!confirmTarget}
+            >
+              Disable
+            </Button>
+            <Button
+              variant="contained"
+              color="error"
+              onClick={doDisableAndDelete}
+              disabled={!confirmTarget}
+            >
+              Disable + Delete Data
+            </Button>
+          </DialogActions>
+        </Dialog>
       </Stack>
     </Container>
   );

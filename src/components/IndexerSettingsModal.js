@@ -19,40 +19,23 @@ import RefreshIcon from '@mui/icons-material/Refresh';
 import FolderOpenIcon from '@mui/icons-material/FolderOpen';
 import DeleteIcon from '@mui/icons-material/Delete';
 import { DataGridPro, GridToolbar } from '@mui/x-data-grid-pro';
+import { formatBytes, formatDuration, formatDateTime, formatInterval } from '../utils/formatters';
 
 const hasElectron = typeof window !== 'undefined' && !!window.electronAPI;
 
-function formatBytes(bytes) {
-  if (bytes == null) return '—';
-  const units = ['B', 'KB', 'MB', 'GB', 'TB', 'PB'];
-  let v = bytes;
-  let u = 0;
-  while (v >= 1024 && u < units.length - 1) {
-    v /= 1024;
-    u++;
-  }
-  return `${v.toFixed(1)} ${units[u]}`;
-}
-
-function formatDate(iso) {
-  if (!iso) return '—';
-  const d = new Date(iso);
-  if (Number.isNaN(d.getTime())) return '—';
-  return d.toLocaleString();
-}
-
-function formatInterval(ms) {
-  if (ms == null) return 'default';
-  if (ms < 0) return 'manual only';
-  if (ms === 0) return 'on mount only';
-  const s = Math.floor(ms / 1000);
-  if (s < 60) return `${s}s`;
-  const m = Math.floor(s / 60);
-  if (m < 60) return `${m} min`;
-  const h = Math.floor(m / 60);
-  if (h < 24) return `${h} hr`;
-  const d = Math.floor(h / 24);
-  return `${d} day${d !== 1 ? 's' : ''}`;
+function ResultChip({ status }) {
+  if (!status) return '—';
+  const map = {
+    success: { label: 'Success', severity: 'success' },
+    cancelled: { label: 'Cancelled', severity: 'warning' },
+    error: { label: 'Error', severity: 'error' }
+  };
+  const cfg = map[status] || { label: status, severity: 'info' };
+  return (
+    <Alert severity={cfg.severity} sx={{ py: 0, px: 1, display: 'inline-flex' }}>
+      {cfg.label}
+    </Alert>
+  );
 }
 
 const DEFAULT_INTERVAL = 20 * 60 * 1000;
@@ -309,7 +292,19 @@ export default function IndexerSettingsModal({ open, onClose, onStateChanged }) 
       field: 'last_scan_at',
       headerName: 'Last Scan',
       width: 180,
-      valueGetter: (p) => formatDate(p.row.last_scan_at)
+      valueGetter: (p) => formatDateTime(p.row.last_scan_at)
+    },
+    {
+      field: 'last_run_status',
+      headerName: 'Last Result',
+      width: 130,
+      renderCell: (p) => <ResultChip status={p.row.last_run_status} />
+    },
+    {
+      field: 'last_run_duration_ms',
+      headerName: 'Duration',
+      width: 110,
+      valueGetter: (p) => formatDuration(p.row.last_run_duration_ms)
     },
     {
       field: 'scan_interval_ms',
@@ -410,7 +405,19 @@ export default function IndexerSettingsModal({ open, onClose, onStateChanged }) 
       field: 'last_scan_at',
       headerName: 'Last Scan',
       width: 180,
-      valueGetter: (p) => formatDate(p.row.last_scan_at)
+      valueGetter: (p) => formatDateTime(p.row.last_scan_at)
+    },
+    {
+      field: 'last_run_status',
+      headerName: 'Last Result',
+      width: 130,
+      renderCell: (p) => <ResultChip status={p.row.last_run_status} />
+    },
+    {
+      field: 'last_run_duration_ms',
+      headerName: 'Duration',
+      width: 110,
+      valueGetter: (p) => formatDuration(p.row.last_run_duration_ms)
     },
     {
       field: 'actions',
