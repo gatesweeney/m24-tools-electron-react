@@ -2,62 +2,72 @@
   "name": "m24-tools",
   "productName": "M24 Tools",
   "version": "1.0.0",
-  "homepage": ".",
   "private": true,
-  "build": {
-    "appId": "com.m24.tools",
-    "mac": {
-      "icon": "src/assets/webclip.icns"
-    },
-    "win": {
-      "icon": "src/assets/webclip.png"
-    },
-    "files": [
-      "build/**/*",
-      "electron/**/*",
-      "indexer/**/*",
-      "package.json"
-    ],
-    "asarUnpack": [
-      "electron/bin/**"
-    ]
-  },
+  "homepage": ".",
   "main": "electron/main.js",
+  "engines": {
+    "node": ">=24 <25"
+  },
+  "scripts": {
+    "start": "npm run dev",
+    "react-start": "react-scripts start",
+    "react-build": "react-scripts build",
+    "electron-start": "electron .",
+    "dev": "concurrently \"npm run react-start\" \"npm run electron-start\"",
+    "dist:mac": "npm run react-build && electron-builder --mac"
+  },
   "dependencies": {
     "@emotion/react": "^11.11.4",
     "@emotion/styled": "^11.11.0",
     "@mui/icons-material": "^5.15.15",
     "@mui/material": "^5.18.0",
-    "@mui/x-data-grid-pro": "^5.17.24",
+    "@mui/x-data-grid-  ": "^6.19.8",
     "better-sqlite3": "^12.4.1",
-    "browser-image-compression": "^2.0.2",
-    "file-saver": "^2.0.5",
-    "heic2any": "^0.0.4",
-    "jszip": "^3.10.1",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
-    "react-router-dom": "^6.28.0",
-    "volta": "^0.0.0",
-    "web-vitals": "^3.5.2"
+    "react-router-dom": "^6.28.0"
   },
   "devDependencies": {
+    "asar": "^3.2.0",
     "concurrently": "^9.0.1",
     "electron": "^34.0.0",
-    "electron-builder": "^26.0.12",
-    "electron-reload": "^1.5.0",
+    "electron-builder": "^26.4.0",
     "react-scripts": "5.0.1"
   },
-  "scripts": {
-    "react-start": "react-scripts start",
-    "react-build": "react-scripts build",
-    "react-test": "react-scripts test",
-    "react-eject": "react-scripts eject",
-    "electron-start": "electron .",
-    "preinstall": "node -e \"const v=process.versions.node; if(!v.startsWith('22.12.0')){console.error('Use Node 22.12.0 (nvm use)');process.exit(1)}\"",
-    "dev": "concurrently \"npm run react-start\" \"npm run electron-start\"",
-    "build": "npm run react-build",
-    "rebuild:sqlite:electron": "node ./scripts/rebuild-sqlite-electron.js",
-    "dist:mac": "npm run react-build && npm run rebuild:sqlite:electron && electron-builder --mac"
+  "build": {
+    "appId": "com.m24.tools",
+    "extraMetadata": {
+      "main": "electron/main.js"
+    },
+    "asar": {
+      "smartUnpack": true
+    },
+    "files": [
+      "build/**/*",
+      "electron/**/*",
+      "indexer/**/*",
+      "src/assets/**/*",
+      "package.json"
+    ],
+    "asarUnpack": [
+      "electron/**",
+      "indexer/**",
+      "node_modules/better-sqlite3/**",
+      "node_modules/bindings/**",
+      "node_modules/file-uri-to-path/**"
+    ],
+    "mac": {
+      "category": "public.app-category.developer-tools",
+      "icon": "src/assets/webclip.icns",
+      "target": [
+        {
+          "target": "dmg",
+          "arch": [
+            "arm64"
+          ]
+        }
+      ]
+    }
   },
   "eslintConfig": {
     "extends": [
@@ -76,19 +86,5 @@
       "last 1 firefox version",
       "last 1 safari version"
     ]
-  },
-  "description": "React + Material UI frontend with Electron backend for media tools.",
-  "repository": {
-    "type": "git",
-    "url": "git+https://github.com/gatesweeney/m24-tools-electron-react.git"
-  },
-  "keywords": [],
-  "author": "",
-  "license": "ISC",
-  "bugs": {
-    "url": "https://github.com/gatesweeney/m24-tools-electron-react/issues"
-  },
-  "engines": {
-    "node": "22.12.0"
   }
 }

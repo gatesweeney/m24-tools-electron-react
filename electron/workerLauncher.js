@@ -26,8 +26,13 @@ function startIndexerWorker() {
   const { devDir, prodDir } = getBundledBinDir();
   const binDir = app.isPackaged ? prodDir : devDir;
 
-  // Worker entry JS (inside your repo/app.asar)
-  const workerEntry = path.join(__dirname, '..', 'indexer', 'worker', 'main.js');
+  // Worker entry JS - must use unpacked path in production
+  // In dev: <repo>/indexer/worker/main.js
+  // In prod: .../app.asar.unpacked/indexer/worker/main.js
+  let workerEntry = path.join(__dirname, '..', 'indexer', 'worker', 'main.js');
+  if (app.isPackaged && workerEntry.includes('app.asar')) {
+    workerEntry = workerEntry.replace('app.asar', 'app.asar.unpacked');
+  }
 
   const env = {
     ...process.env,

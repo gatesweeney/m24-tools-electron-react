@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import Dialog from '@mui/material/Dialog';
 import DialogTitle from '@mui/material/DialogTitle';
 import DialogContent from '@mui/material/DialogContent';
@@ -11,7 +11,6 @@ import Box from '@mui/material/Box';
 import Stack from '@mui/material/Stack';
 import Typography from '@mui/material/Typography';
 import Alert from '@mui/material/Alert';
-import LinearProgress from '@mui/material/LinearProgress';
 import Switch from '@mui/material/Switch';
 import Tooltip from '@mui/material/Tooltip';
 import IconButton from '@mui/material/IconButton';
@@ -56,58 +55,22 @@ function intervalLabel(ms) {
 }
 
 /**
- * Busy indicator that doesn't flicker:
- * - increments for each async operation
- * - shows bar only if busy lasts > SHOW_DELAY
- * - once visible, stays visible at least MIN_VISIBLE
+ * Simple busy counter for async operations.
  */
 function useBusyIndicator() {
   const [busyCount, setBusyCount] = useState(0);
-  const busy = busyCount > 0;
-
-  const [busyVisible, setBusyVisible] = useState(false);
-  const showTimer = useRef(null);
-  const hideTimer = useRef(null);
-
-  const SHOW_DELAY = 120;     // ms
-  const MIN_VISIBLE = 250;    // ms
-
-  useEffect(() => {
-    if (showTimer.current) clearTimeout(showTimer.current);
-    if (hideTimer.current) clearTimeout(hideTimer.current);
-
-    if (busy) {
-      // only show if it lasts a bit
-      showTimer.current = setTimeout(() => {
-        setBusyVisible(true);
-      }, SHOW_DELAY);
-    } else {
-      // keep visible briefly to avoid flicker
-      hideTimer.current = setTimeout(() => {
-        setBusyVisible(false);
-      }, MIN_VISIBLE);
-    }
-
-    return () => {
-      if (showTimer.current) clearTimeout(showTimer.current);
-      if (hideTimer.current) clearTimeout(hideTimer.current);
-    };
-  }, [busy]);
-
   const begin = useCallback(() => setBusyCount((c) => c + 1), []);
   const end = useCallback(() => setBusyCount((c) => Math.max(0, c - 1)), []);
-
-  return { busy, busyVisible, begin, end };
+  return { busy: busyCount > 0, begin, end };
 }
 
 export default function IndexerSettingsModal({ open, onClose, onStateChanged }) {
-  const [tab, setTab] = useState(0); // 0=Service, 1=Drives, 2=Manual Roots
+  const [tab, setTab] = useState(0); // 0=Drives, 1=Manual Roots
   const [error, setError] = useState(null);
 
   const [state, setState] = useState({ drives: [], roots: [] });
-  const [serviceStatus, setServiceStatus] = useState(null);
 
-  const { busyVisible, begin, end } = useBusyIndicator();
+  const { begin, end } = useBusyIndicator();
 
   // --- Helpers ---
   const safeCall = useCallback(async (fn, { setErr = true } = {}) => {
@@ -141,26 +104,11 @@ export default function IndexerSettingsModal({ open, onClose, onStateChanged }) 
     onStateChanged && onStateChanged(st);
   }, [safeCall, onStateChanged]);
 
-  const loadServiceStatus = useCallback(async () => {
-    const res = await safeCall(() => window.electronAPI.indexerServiceStatus?.(), { setErr: false });
-    if (!res) return;
-    setServiceStatus(res);
-  }, [safeCall]);
-
   // Load once per open (not repeatedly)
   useEffect(() => {
     if (!open) return;
     loadIndexerState();
-    loadServiceStatus();
-  }, [open, loadIndexerState, loadServiceStatus]);
-
-  // --- Service actions ---
-  const doServiceAction = useCallback(async (fn) => {
-    setError(null);
-    const res = await safeCall(fn, { setErr: true });
-    if (res && res.ok === false) setError(res.error || 'Service action failed.');
-    await loadServiceStatus();
-  }, [safeCall, loadServiceStatus]);
+  }, [open, loadIndexerState]);
 
   // --- Drives actions ---
   const setVolumeActive = useCallback(async (volumeUuid, isActive) => {
@@ -445,70 +393,6 @@ export default function IndexerSettingsModal({ open, onClose, onStateChanged }) 
     }
   ]), [setManualRootActive, setManualRootInterval, removeManualRoot]);
 
-  // --- Panes ---
-  const ServicePane = () => (
-    <Stack spacing={2} sx={{ pt: 2 }}>
-      <Stack direction="row" justifyContent="space-between" alignItems="center">
-        <Typography variant="subtitle1">Background Service</Typography>
-        <Tooltip title="Refresh">
-          <span>
-            <IconButton size="small" onClick={loadServiceStatus}>
-              <RefreshIcon fontSize="small" />
-            </IconButton>
-          </span>
-        </Tooltip>
-      </Stack>
-
-      {!serviceStatus ? (
-        <Alert severity="info">Service status not loaded yet.</Alert>
-      ) : serviceStatus.ok === false ? (
-        <Alert severity="error">{serviceStatus.error || 'Failed to read service status.'}</Alert>
-      ) : serviceStatus.loaded ? (
-        <Alert severity="success">Service is installed and loaded (running in background).</Alert>
-      ) : (
-        <Alert severity="warning">Service not installed (indexing runs only while app is open).</Alert>
-      )}
-
-      <Stack direction="row" spacing={1}>
-        <Button
-          variant="contained"
-          disabled={!window.electronAPI.indexerServiceInstall}
-          onClick={() => doServiceAction(window.electronAPI.indexerServiceInstall)}
-        >
-          Install
-        </Button>
-        <Button
-          variant="outlined"
-          disabled={!window.electronAPI.indexerServiceRestart || !serviceStatus?.loaded}
-          onClick={() => doServiceAction(window.electronAPI.indexerServiceRestart)}
-        >
-          Restart
-        </Button>
-        <Button
-          variant="outlined"
-          color="warning"
-          disabled={!window.electronAPI.indexerServiceUninstall}
-          onClick={() => doServiceAction(window.electronAPI.indexerServiceUninstall)}
-        >
-          Uninstall
-        </Button>
-      </Stack>
-
-      <Alert severity="info">
-        Full Disk Access is required for complete indexing. (We’ll wire a one-click button to open
-        the System Settings pane next.)
-      </Alert>
-
-      <Typography variant="body2" color="text.secondary">
-        Logs:
-        <br />
-        ~/Library/Logs/m24-indexer.log
-        <br />
-        ~/Library/Logs/m24-indexer.err.log
-      </Typography>
-    </Stack>
-  );
-
   return (
     <Dialog
       open={open}
@@ -522,16 +406,10 @@ export default function IndexerSettingsModal({ open, onClose, onStateChanged }) 
       <DialogContent dividers sx={{ overflow: 'hidden' }}>
         <Box sx={{ height: '100%', display: 'flex', flexDirection: 'column' }}>
           <Tabs value={tab} onChange={(_, v) => setTab(v)}>
-            <Tab label="Service" />
             <Tab label="Drives" />
             <Tab label="Manual Roots" />
           </Tabs>
           <Divider sx={{ mb: 1 }} />
-
-          {/* Reserved space for progress bar (no layout shift) */}
-          <Box sx={{ height: 4, mb: 1 }}>
-            {busyVisible ? <LinearProgress /> : null}
-          </Box>
 
           {error && (
             <Alert severity="error" onClose={() => setError(null)} sx={{ mb: 1 }}>
@@ -541,9 +419,7 @@ export default function IndexerSettingsModal({ open, onClose, onStateChanged }) 
 
           {/* Tab content fills remaining space */}
           <Box sx={{ flex: 1, minHeight: 0 }}>
-            {tab === 0 && <ServicePane />}
-
-            {tab === 1 && (
+            {tab === 0 && (
               <Stack spacing={1} sx={{ height: '100%' }}>
                 <Stack direction="row" justifyContent="space-between" alignItems="center">
                   <Typography variant="subtitle1">Drives</Typography>
@@ -571,7 +447,7 @@ export default function IndexerSettingsModal({ open, onClose, onStateChanged }) 
               </Stack>
             )}
 
-            {tab === 2 && (
+            {tab === 1 && (
               <Stack spacing={1} sx={{ height: '100%' }}>
                 <Stack direction="row" justifyContent="space-between" alignItems="center">
                   <Typography variant="subtitle1">Manual Roots</Typography>

@@ -37,11 +37,28 @@ function ResultChip({ status }) {
 
 export default function IndexerPage() {
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [fdaDialogOpen, setFdaDialogOpen] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
   const [state, setState] = useState({ drives: [], roots: [] });
   const [confirmOpen, setConfirmOpen] = useState(false);
   const [confirmTarget, setConfirmTarget] = useState(null); // { type: 'volume'|'root', id, name }
+
+  const remindLater = async () => {
+    const until = new Date(Date.now() + 24*60*60*1000).toISOString();
+    await window.electronAPI.setIndexerSetting?.('fda_prompt_snooze_until', until);
+    setFdaDialogOpen(false);
+  };
+
+  const dontAskAgain = async () => {
+    await window.electronAPI.setIndexerSetting?.('fda_prompt_optout', '1');
+    setFdaDialogOpen(false);
+  };
+
+  const allow = async () => {
+    await window.electronAPI.openFullDiskAccess?.();
+    setFdaDialogOpen(false);
+  };
 
   const load = async () => {
     if (!hasElectron || !window.electronAPI.getIndexerState) {
@@ -107,6 +124,25 @@ export default function IndexerPage() {
 
   useEffect(() => {
     load();
+    (async () => {
+      if (!window.electronAPI?.checkFullDiskAccess) return;
+
+      // settings keys
+      const OPT_OUT_KEY = 'fda_prompt_optout';
+      const SNOOZE_UNTIL_KEY = 'fda_prompt_snooze_until';
+
+      const optOut = await window.electronAPI.getIndexerSetting?.(OPT_OUT_KEY);
+      if (optOut?.value === '1') return;
+
+      const snooze = await window.electronAPI.getIndexerSetting?.(SNOOZE_UNTIL_KEY);
+      const snoozeUntil = snooze?.value ? Date.parse(snooze.value) : 0;
+      if (snoozeUntil && Date.now() < snoozeUntil) return;
+
+      const res = await window.electronAPI.checkFullDiskAccess();
+      if (res?.ok && res.hasFullDiskAccess === false) {
+        setFdaDialogOpen(true);
+      }
+    })();
   }, []);
 
   const driveRows = (state.drives || []).map((d, idx) => ({ id: d.volume_uuid || idx, ...d }));
@@ -357,6 +393,29 @@ export default function IndexerPage() {
           onClose={() => setSettingsOpen(false)}
           onStateChanged={(st) => setState(st)}
         />
+
+        <Dialog open={fdaDialogOpen} onClose={() => setFdaDialogOpen(false)} maxWidth="sm" fullWidth>
+          <DialogTitle>Full Disk Access</DialogTitle>
+          <DialogContent dividers>
+            <Typography variant="body2" color="text.secondary" paragraph>
+              Full Disk Access is recommended so M24 Tools can index all folders and external drives reliably.
+            </Typography>
+            <Typography variant="body2" color="text.secondary">
+              You can enable it in System Settings → Privacy & Security → Full Disk Access. Click the + button at the bottom and add M24 Tools. Restart the app after enabling.
+            </Typography>
+          </DialogContent>
+          <DialogActions>
+            <Button variant="outlined" onClick={dontAskAgain}>
+              Don't ask again
+            </Button>
+            <Button variant="outlined" onClick={remindLater}>
+              Remind me later
+            </Button>
+            <Button variant="contained" onClick={allow}>
+              Open Settings
+            </Button>
+          </DialogActions>
+        </Dialog>
 
         <Dialog open={confirmOpen} onClose={closeConfirm} maxWidth="sm" fullWidth>
           <DialogTitle>Remove from scanning</DialogTitle>

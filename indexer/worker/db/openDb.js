@@ -65,6 +65,25 @@ function migrateToV1(db) {
     CREATE INDEX IF NOT EXISTS files_name_idx ON files(name);
     CREATE INDEX IF NOT EXISTS files_status_idx ON files(status);
 
+    CREATE TABLE IF NOT EXISTS media_metadata (
+      id             INTEGER PRIMARY KEY,
+      file_id        INTEGER NOT NULL UNIQUE,
+      duration_sec   REAL,
+      width          INTEGER,
+      height         INTEGER,
+      video_codec    TEXT,
+      audio_codec    TEXT,
+      audio_sample_rate INTEGER,
+      audio_channels INTEGER,
+      bitrate        INTEGER,
+      format_name    TEXT,
+      raw_json       TEXT,
+      probed_at      TEXT,
+      FOREIGN KEY (file_id) REFERENCES files(id) ON DELETE CASCADE
+    );
+
+    CREATE INDEX IF NOT EXISTS media_metadata_file_id_idx ON media_metadata(file_id);
+
     CREATE TABLE IF NOT EXISTS scan_runs (
       id              INTEGER PRIMARY KEY,
       target_type     TEXT NOT NULL, -- 'volume' | 'manual_root'
@@ -128,6 +147,41 @@ function ensureColumns(db) {
 
   add('duration_ms', 'duration_ms INTEGER');
   add('result', 'result TEXT'); // if you want separate from status
+
+  // Ensure media_metadata table exists (for existing databases)
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS media_metadata (
+      id             INTEGER PRIMARY KEY,
+      file_id        INTEGER NOT NULL UNIQUE,
+      duration_sec   REAL,
+      width          INTEGER,
+      height         INTEGER,
+      video_codec    TEXT,
+      audio_codec    TEXT,
+      audio_sample_rate INTEGER,
+      audio_channels INTEGER,
+      bitrate        INTEGER,
+      format_name    TEXT,
+      raw_json       TEXT,
+      probed_at      TEXT,
+      FOREIGN KEY (file_id) REFERENCES files(id) ON DELETE CASCADE
+    );
+    CREATE INDEX IF NOT EXISTS media_metadata_file_id_idx ON media_metadata(file_id);
+  `);
+
+  // Transcriptions table for Whisper output
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS transcriptions (
+      id              INTEGER PRIMARY KEY,
+      file_path       TEXT UNIQUE NOT NULL,
+      text            TEXT,
+      language        TEXT,
+      duration_sec    REAL,
+      transcribed_at  TEXT,
+      model           TEXT
+    );
+    CREATE INDEX IF NOT EXISTS transcriptions_path_idx ON transcriptions(file_path);
+  `);
 }
 
 function openDb() {

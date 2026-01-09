@@ -6,7 +6,7 @@ const fs = require('fs');
 const Database = require('better-sqlite3');
 
 /**
- * Normalize a file row into a search result suitable for a DataGrid.
+ * Normalize a file row (with optional media metadata) into a search result.
  */
 function normalizeFileRow(row, machineId) {
   return {
@@ -19,77 +19,170 @@ function normalizeFileRow(row, machineId) {
     ext: row.ext || null,
     size_bytes: row.size_bytes || null,
     mtime: row.mtime || null,
+    ctime: row.ctime || null,
     is_dir: !!row.is_dir,
+    file_type: row.file_type || null,
     path: row.root_path
       ? `${row.root_path}/${row.relative_path}`.replace(/\/+/g, '/')
-      : row.relative_path
+      : row.relative_path,
+    // Media metadata fields
+    duration_sec: row.duration_sec || null,
+    width: row.width || null,
+    height: row.height || null,
+    video_codec: row.video_codec || null,
+    audio_codec: row.audio_codec || null,
+    audio_sample_rate: row.audio_sample_rate || null,
+    audio_channels: row.audio_channels || null,
+    bitrate: row.bitrate || null,
+    format_name: row.format_name || null
   };
 }
 
 /**
- * Simple token-based fuzzy search using LIKE and scoring.
- * Score is based on presence and position of tokens in name and relative_path.
+ * Score a row based on token matches across all searchable fields.
  */
 function scoreRow(row, tokens) {
   let score = 0;
-  const nameLower = (row.name || '').toLowerCase();
-  const pathLower = (row.relative_path || '').toLowerCase();
+
+  // Text fields to search with their weights
+  const fields = [
+    { value: row.name, weight: 10, startBonus: 5 },
+    { value: row.relative_path, weight: 5, startBonus: 0 },
+    { value: row.ext, weight: 8, startBonus: 3 },
+    { value: row.file_type, weight: 4, startBonus: 0 },
+    { value: row.video_codec, weight: 6, startBonus: 2 },
+    { value: row.audio_codec, weight: 6, startBonus: 2 },
+    { value: row.format_name, weight: 4, startBonus: 0 },
+    { value: row.root_path, weight: 2, startBonus: 0 }
+  ];
 
   for (const token of tokens) {
-    if (nameLower.includes(token)) score += 10;
-    if (pathLower.includes(token)) score += 5;
-    if (nameLower.startsWith(token)) score += 3;
+    for (const field of fields) {
+      if (!field.value) continue;
+      const valueLower = String(field.value).toLowerCase();
+      if (valueLower.includes(token)) {
+        score += field.weight;
+        if (field.startBonus && valueLower.startsWith(token)) {
+          score += field.startBonus;
+        }
+      }
+    }
+
+    // Special handling for size searches (e.g., "1080" matches height)
+    if (/^\d+$/.test(token)) {
+      const num = parseInt(token, 10);
+      if (row.width === num || row.height === num) score += 8;
+    }
   }
+
   return score;
 }
 
 /**
- * Search the given DB using simple token-based fuzzy matching with LIKE.
- * Returns normalized and scored results.
+ * Parse size filter from query (e.g., ">1gb", "<500mb", "size:large")
+ */
+function parseSizeFilter(token) {
+  // Match patterns like >1gb, <500mb, >=2gb
+  const sizeMatch = token.match(/^([<>]=?)(\d+(?:\.\d+)?)(kb|mb|gb|tb)?$/i);
+  if (sizeMatch) {
+    const [, op, numStr, unit = 'b'] = sizeMatch;
+    let bytes = parseFloat(numStr);
+    const multipliers = { kb: 1024, mb: 1024**2, gb: 1024**3, tb: 1024**4, b: 1 };
+    bytes *= multipliers[unit.toLowerCase()] || 1;
+    return { op, bytes };
+  }
+  return null;
+}
+
+/**
+ * Search the given DB using token-based matching across all fields.
+ * Joins with media_metadata table for codec/duration/resolution searches.
  */
 function searchLocalDb(db, q, opts = {}) {
   const limit = opts.limit || 200;
-  const tokens = q
-    .toLowerCase()
-    .split(/\s+/)
-    .filter(Boolean);
+  const rawTokens = q.toLowerCase().split(/\s+/).filter(Boolean);
 
-  if (!tokens.length) return [];
+  if (!rawTokens.length) return [];
 
-  // Build WHERE clause with AND of tokens, each token matching name OR relative_path LIKE
-  const whereClauses = tokens.map(() => '(name LIKE ? OR relative_path LIKE ?)').join(' AND ');
-  const params = [];
-  for (const t of tokens) {
-    const pattern = `%${t}%`;
-    params.push(pattern, pattern);
+  // Separate size filters from text tokens
+  const sizeFilters = [];
+  const tokens = [];
+
+  for (const t of rawTokens) {
+    const sizeFilter = parseSizeFilter(t);
+    if (sizeFilter) {
+      sizeFilters.push(sizeFilter);
+    } else {
+      tokens.push(t);
+    }
   }
 
+  // Build WHERE clause - search across multiple fields
+  // Each token must match at least one of these fields
+  const searchFields = [
+    'f.name',
+    'f.relative_path',
+    'f.ext',
+    'f.file_type',
+    'f.root_path',
+    'm.video_codec',
+    'm.audio_codec',
+    'm.format_name',
+    'CAST(m.width AS TEXT)',
+    'CAST(m.height AS TEXT)'
+  ];
+
+  const whereClauses = [];
+  const params = [];
+
+  // Text token matching
+  for (const t of tokens) {
+    const pattern = `%${t}%`;
+    const fieldClauses = searchFields.map(f => `${f} LIKE ?`).join(' OR ');
+    whereClauses.push(`(${fieldClauses})`);
+    for (let i = 0; i < searchFields.length; i++) {
+      params.push(pattern);
+    }
+  }
+
+  // Size filters
+  for (const sf of sizeFilters) {
+    const opMap = { '>': '>', '<': '<', '>=': '>=', '<=': '<=' };
+    const sqlOp = opMap[sf.op] || '>';
+    whereClauses.push(`f.size_bytes ${sqlOp} ?`);
+    params.push(sf.bytes);
+  }
+
+  const whereClause = whereClauses.length > 0
+    ? `WHERE ${whereClauses.join(' AND ')}`
+    : '';
+
   const sql = `
-    SELECT f.*
+    SELECT f.*,
+           m.duration_sec, m.width, m.height, m.video_codec, m.audio_codec,
+           m.audio_sample_rate, m.audio_channels, m.bitrate, m.format_name
     FROM files f
-    WHERE ${whereClauses}
+    LEFT JOIN media_metadata m ON m.file_id = f.id
+    ${whereClause}
     LIMIT ?
   `;
 
   let rows = [];
   try {
-    rows = db.prepare(sql).all(...params, limit);
-  } catch {
-    // In case of any error, return empty array
+    rows = db.prepare(sql).all(...params, limit * 2); // fetch extra for scoring
+  } catch (e) {
+    console.error('[search] query error:', e.message);
     return [];
   }
 
   // Score and normalize results
-  const results = rows.map(row => {
-    return {
-      ...normalizeFileRow(row, null),
-      _score: scoreRow(row, tokens)
-    };
-  });
+  const results = rows.map(row => ({
+    ...normalizeFileRow(row, null),
+    _score: scoreRow(row, tokens)
+  }));
 
-  // Filter out zero scores and sort descending by score
+  // Sort by score descending and limit
   return results
-    .filter(r => r._score > 0)
     .sort((a, b) => b._score - a._score)
     .slice(0, limit);
 }

@@ -10,8 +10,6 @@ import HomeIcon from '@mui/icons-material/Home';
 const pages = [
   { label: 'Home', path: '/' },
   { label: 'Proxy Tool', path: '/proxy' },
-  { label: 'HEIC Converter', path: '/heic-converter' },
-  { label: 'Image Compressor', path: '/image-compressor' },
   { label: 'YouTube', path: '/youtube' },
   { label: 'YouTube Simple', path: '/youtube-simple' },
   { label: 'Indexer', path: '/indexer' },

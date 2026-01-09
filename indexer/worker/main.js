@@ -296,7 +296,7 @@ function startWorker() {
   });
 
   watcher.on('mounted', (mount) => {
-    console.log('[mount] mounted', mount.mount_point);
+    console.log('[mount] mounted', mount.mount_point, mount.volume_name || '');
 
     latestMounts = Array.from(new Map([...latestMounts, mount].map(m => [m.key, m])).values());
     mountedVolumeUuids = latestMounts.filter(m => m.kind === 'volume').map(m => m.volume_uuid);
@@ -304,10 +304,15 @@ function startWorker() {
 
     if (mount.kind !== 'volume') return;
 
+    // Upsert volume record (creates if new, updates mount_point if existing)
     const vol = upsertVolume(mount);
+
+    // Always scan on mount unless explicitly disabled
     if (vol && vol.is_active) {
-      // immediate mount scan
+      console.log('[mount] enqueueing immediate scan for', mount.volume_name);
       mountQueue.enqueue(createVolumeJob(mount, { label: 'MOUNT' }));
+    } else {
+      console.log('[mount] skipping scan - volume is disabled:', mount.volume_name);
     }
   });
 

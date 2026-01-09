@@ -28,6 +28,24 @@ contextBridge.exposeInMainWorld('electronAPI', {
   searchQuery: async (query, opts) =>
     ipcRenderer.invoke('search:query', query, opts || {}),
 
+  getVolumeInfo: async (volumeUuid) =>
+    ipcRenderer.invoke('search:getVolumeInfo', volumeUuid),
+
+  getMediaInfo: async (filePath) =>
+    ipcRenderer.invoke('search:getMediaInfo', filePath),
+
+  generateClipThumbnails: async (filePath) =>
+    ipcRenderer.invoke('search:generateClipThumbnails', filePath),
+
+  getDirectoryContents: async (volumeUuid, rootPath, dirRelativePath) =>
+    ipcRenderer.invoke('indexer:getDirectoryContents', volumeUuid, rootPath, dirRelativePath),
+
+  getDirectoryStats: async (volumeUuid, rootPath, dirRelativePath) =>
+    ipcRenderer.invoke('indexer:getDirectoryStats', volumeUuid, rootPath, dirRelativePath),
+
+  generateBatchThumbnails: async (files) =>
+    ipcRenderer.invoke('search:generateBatchThumbnails', files),
+
   getYtFormats: async (url) => ipcRenderer.invoke('ytdlp:getFormats', url),
   downloadYtFormat: async (payload) => ipcRenderer.invoke('ytdlp:download', payload),
   onYtProgress: (callback) => {
@@ -43,12 +61,6 @@ onYtLog: (callback) => {
   ipcRenderer.on('yt:log', listener);
   return () => ipcRenderer.removeListener('yt:log', listener);
 },
-
-
-indexerServiceStatus: async () => ipcRenderer.invoke('indexerService:status'),
-indexerServiceInstall: async () => ipcRenderer.invoke('indexerService:install'),
-indexerServiceUninstall: async () => ipcRenderer.invoke('indexerService:uninstall'),
-indexerServiceRestart: async () => ipcRenderer.invoke('indexerService:restart'),
 
 // Indexer state + settings
 getIndexerState: async () => ipcRenderer.invoke('indexer:getState'),
@@ -102,5 +114,21 @@ cancelIndexerAll: async () => ipcRenderer.invoke('indexer:cancelAll'),
 cancelIndexerCurrent: async () => ipcRenderer.invoke('indexer:cancelCurrent'),
 cancelIndexerKey: async (key) => ipcRenderer.invoke('indexer:cancelKey', key),
 
-  
+getIndexerSetting: (key) => ipcRenderer.invoke('indexer:getSetting', key),
+setIndexerSetting: (key, value) => ipcRenderer.invoke('indexer:setSetting', key, value),
+
+checkFullDiskAccess: () => ipcRenderer.invoke('system:checkFullDiskAccess'),
+openFullDiskAccess: () => ipcRenderer.invoke('system:openFullDiskAccess'),
+
+// Whisper transcription
+transcribeRequest: async (filePath) => ipcRenderer.invoke('transcribe:request', filePath),
+transcribeGetCached: async (filePath) => ipcRenderer.invoke('transcribe:getCached', filePath),
+transcribeCheckAvailable: async () => ipcRenderer.invoke('transcribe:checkAvailable'),
+onTranscribeProgress: (callback) => {
+  const listener = (_event, data) => callback(data);
+  ipcRenderer.on('transcribe:progress', listener);
+  return () => ipcRenderer.removeListener('transcribe:progress', listener);
+},
+
+
 });

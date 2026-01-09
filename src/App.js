@@ -5,8 +5,6 @@ import NavBar from './components/NavBar';
 import JobProgressBar from './components/JobProgressBar';
 import HomePage from './pages/HomePage';
 import ProxyToolPage from './pages/ProxyToolPage';
-import HeicConverterPage from './pages/HeicConverterPage';
-import ImageCompressorPage from './pages/ImageCompressorPage';
 import YouTubeDownloaderPage from './pages/YouTubeDownloaderPage';
 import YouTubeSimplePage from './pages/YouTubeSimplePage';
 import IndexerPage from './pages/IndexerPage';
@@ -112,8 +110,6 @@ const cancelCurrent = async () => {
     <Routes>
       <Route path="/" element={<HomePage />} />
       <Route path="/proxy" element={<ProxyToolPage />} />
-      <Route path="/heic-converter" element={<HeicConverterPage />} />
-      <Route path="/image-compressor" element={<ImageCompressorPage />} />
       <Route path="/youtube" element={<YouTubeDownloaderPage />} />
       <Route path="/youtube-simple" element={<YouTubeSimplePage />} />
       <Route path="/indexer" element={<IndexerPage />} />

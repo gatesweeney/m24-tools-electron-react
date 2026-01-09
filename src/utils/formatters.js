@@ -43,3 +43,21 @@ export function formatInterval(ms) {
   const d = Math.floor(h / 24);
   return `${d} day${d !== 1 ? 's' : ''}`;
 }
+
+export function formatDurationSec(seconds) {
+  if (seconds == null || Number.isNaN(seconds)) return '—';
+  const s = parseFloat(seconds);
+  if (s < 0) return '—';
+  const h = Math.floor(s / 3600);
+  const m = Math.floor((s % 3600) / 60);
+  const sec = Math.floor(s % 60);
+  if (h > 0) return `${h}:${String(m).padStart(2, '0')}:${String(sec).padStart(2, '0')}`;
+  return `${m}:${String(sec).padStart(2, '0')}`;
+}
+
+export function formatBitrate(bps) {
+  if (bps == null || Number.isNaN(bps)) return '—';
+  const kbps = parseInt(bps, 10) / 1000;
+  if (kbps < 1000) return `${kbps.toFixed(0)} kbps`;
+  return `${(kbps / 1000).toFixed(1)} Mbps`;
+}

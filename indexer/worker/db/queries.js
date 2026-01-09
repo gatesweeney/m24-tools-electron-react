@@ -245,6 +245,121 @@ function disableAndDeleteManualRootData(rootId) {
   return getIndexerState();
 }
 
+function getSetting(key) {
+  const db = openDb();
+  const row = db.prepare(`SELECT value FROM settings WHERE key = ?`).get(key);
+  db.close();
+  return row ? row.value : null;
+}
+
+function getVolumeByUuid(volumeUuid) {
+  const db = openDb();
+  const vol = db.prepare(`SELECT * FROM volumes WHERE volume_uuid = ?`).get(volumeUuid);
+  db.close();
+  return vol || null;
+}
+
+function setSetting(key, value) {
+  const db = openDb();
+  db.prepare(`
+    INSERT INTO settings(key, value) VALUES(?, ?)
+    ON CONFLICT(key) DO UPDATE SET value=excluded.value
+  `).run(key, value);
+  db.close();
+  return { ok: true };
+}
+
+/**
+ * Get immediate children of a directory.
+ * Used for Finder column-view navigation in search results.
+ */
+function getDirectoryContents(volumeUuid, rootPath, dirRelativePath) {
+  const db = openDb();
+
+  // For root of volume, dirRelativePath might be empty or '.'
+  const prefix = (!dirRelativePath || dirRelativePath === '.' || dirRelativePath === '')
+    ? ''
+    : `${dirRelativePath}/`;
+
+  // Get immediate children (files/dirs directly in this folder, not nested)
+  // Pattern: prefix% matches all descendants
+  // NOT LIKE prefix%/% excludes nested items (only immediate children)
+  let rows;
+  if (prefix === '') {
+    // Root level - get items with no slash in relative_path
+    rows = db.prepare(`
+      SELECT f.*, m.duration_sec, m.width, m.height, m.video_codec, m.audio_codec, m.format_name
+      FROM files f
+      LEFT JOIN media_metadata m ON m.file_id = f.id
+      WHERE f.volume_uuid = ?
+        AND f.root_path = ?
+        AND f.relative_path NOT LIKE '%/%'
+        AND f.relative_path != ''
+      ORDER BY f.is_dir DESC, f.name ASC
+      LIMIT 500
+    `).all(volumeUuid, rootPath);
+  } else {
+    rows = db.prepare(`
+      SELECT f.*, m.duration_sec, m.width, m.height, m.video_codec, m.audio_codec, m.format_name
+      FROM files f
+      LEFT JOIN media_metadata m ON m.file_id = f.id
+      WHERE f.volume_uuid = ?
+        AND f.root_path = ?
+        AND f.relative_path LIKE ?
+        AND f.relative_path NOT LIKE ?
+      ORDER BY f.is_dir DESC, f.name ASC
+      LIMIT 500
+    `).all(volumeUuid, rootPath, `${prefix}%`, `${prefix}%/%`);
+  }
+
+  db.close();
+
+  // Normalize rows to include full path
+  return rows.map(r => ({
+    ...r,
+    is_dir: !!r.is_dir,
+    path: rootPath ? `${rootPath}/${r.relative_path}`.replace(/\/+/g, '/') : r.relative_path
+  }));
+}
+
+/**
+ * Get stats for a directory (file count, total size, etc.)
+ */
+function getDirectoryStats(volumeUuid, rootPath, dirRelativePath) {
+  const db = openDb();
+
+  const prefix = (!dirRelativePath || dirRelativePath === '.' || dirRelativePath === '')
+    ? ''
+    : `${dirRelativePath}/`;
+
+  let stats;
+  if (prefix === '') {
+    stats = db.prepare(`
+      SELECT
+        COUNT(CASE WHEN is_dir = 0 THEN 1 END) AS file_count,
+        COUNT(CASE WHEN is_dir = 1 THEN 1 END) AS dir_count,
+        SUM(CASE WHEN is_dir = 0 THEN COALESCE(size_bytes, 0) ELSE 0 END) AS total_bytes
+      FROM files
+      WHERE volume_uuid = ?
+        AND root_path = ?
+    `).get(volumeUuid, rootPath);
+  } else {
+    stats = db.prepare(`
+      SELECT
+        COUNT(CASE WHEN is_dir = 0 THEN 1 END) AS file_count,
+        COUNT(CASE WHEN is_dir = 1 THEN 1 END) AS dir_count,
+        SUM(CASE WHEN is_dir = 0 THEN COALESCE(size_bytes, 0) ELSE 0 END) AS total_bytes
+      FROM files
+      WHERE volume_uuid = ?
+        AND root_path = ?
+        AND relative_path LIKE ?
+    `).get(volumeUuid, rootPath, `${prefix}%`);
+  }
+
+  db.close();
+  return stats || { file_count: 0, dir_count: 0, total_bytes: 0 };
+}
+
 module.exports = {
   getIndexerState,
   getLocalIndexerState,
@@ -257,5 +372,10 @@ module.exports = {
   disableVolume,
   disableAndDeleteVolumeData,
   disableManualRoot,
-  disableAndDeleteManualRootData
+  disableAndDeleteManualRootData,
+  getSetting,
+  setSetting,
+  getVolumeByUuid,
+  getDirectoryContents,
+  getDirectoryStats
 };
