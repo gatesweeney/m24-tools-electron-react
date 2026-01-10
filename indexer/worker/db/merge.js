@@ -40,6 +40,15 @@ function listMachineDbPaths() {
   return results;
 }
 
+function getSetting(db, key) {
+  try {
+    const row = db.prepare(`SELECT value FROM settings WHERE key = ?`).get(key);
+    return row ? row.value : null;
+  } catch {
+    return null;
+  }
+}
+
 function getTableNames(db) {
   try {
     return db
@@ -79,15 +88,15 @@ function getMergedIndexerState() {
   const dbs = listMachineDbPaths();
 
   const drivesByUuid = new Map(); // volume_uuid -> records[]
-  const rootsByPath = new Map();  // path -> records[]
+  const rootsByPath = new Map();  // machineId::path -> records[]
 
   // Aggregates (MAX across machines)
   const volumeAgg = new Map(); // volume_uuid -> {file_count, dir_count, total_bytes}
-  const rootAgg = new Map();   // rootPath -> {file_count, dir_count, total_bytes}
+  const rootAgg = new Map();   // machineId::rootPath -> {file_count, dir_count, total_bytes}
 
   // Last run info (newest finished_at across machines)
   const volumeLastRun = new Map(); // volume_uuid -> {status, duration_ms, finished_at}
-  const rootLastRun = new Map();   // rootPath -> {status, duration_ms, finished_at}
+  const rootLastRun = new Map();   // machineId::rootPath -> {status, duration_ms, finished_at}
 
   for (const { machineId, dbPath } of dbs) {
     let db;
@@ -96,6 +105,8 @@ function getMergedIndexerState() {
     } catch {
       continue;
     }
+
+    const machineName = getSetting(db, 'machine_name') || machineId;
 
     const tables = getTableNames(db);
     if (!tables.includes('volumes') || !tables.includes('manual_roots')) {
@@ -108,7 +119,7 @@ function getMergedIndexerState() {
       const volumes = db.prepare('SELECT * FROM volumes').all();
       for (const v of volumes) {
         if (!v.volume_uuid) continue;
-        const rec = { ...v, machineId };
+        const rec = { ...v, machineId, machineName };
         const list = drivesByUuid.get(v.volume_uuid) || [];
         list.push(rec);
         drivesByUuid.set(v.volume_uuid, list);
@@ -124,10 +135,11 @@ function getMergedIndexerState() {
       for (const r of roots) {
         if (!r.path) continue;
         rootIdToPath.set(String(r.id), r.path);
-        const rec = { ...r, machineId };
-        const list = rootsByPath.get(r.path) || [];
+        const rec = { ...r, machineId, machineName };
+        const key = `${machineId}::${r.path}`;
+        const list = rootsByPath.get(key) || [];
         list.push(rec);
-        rootsByPath.set(r.path, list);
+        rootsByPath.set(key, list);
       }
     } catch {
       // ignore
@@ -177,8 +189,9 @@ function getMergedIndexerState() {
 
         for (const r of rows) {
           if (!r.root_path) continue;
-          const prev = rootAgg.get(r.root_path) || { file_count: 0, dir_count: 0, total_bytes: 0 };
-          rootAgg.set(r.root_path, {
+          const key = `${machineId}::${r.root_path}`;
+          const prev = rootAgg.get(key) || { file_count: 0, dir_count: 0, total_bytes: 0 };
+          rootAgg.set(key, {
             file_count: Math.max(prev.file_count, r.file_count || 0),
             dir_count: Math.max(prev.dir_count, r.dir_count || 0),
             total_bytes: Math.max(prev.total_bytes, r.total_bytes || 0)
@@ -219,10 +232,11 @@ function getMergedIndexerState() {
             const rootPath = rootIdToPath.get(rootId);
             if (!rootPath) continue;
 
-            const prev = rootLastRun.get(rootPath);
+            const key = `${machineId}::${rootPath}`;
+            const prev = rootLastRun.get(key);
             const prevTs = prev ? safeParseTime(prev.finished_at) : 0;
             if (!prev || finishedTs > prevTs) {
-              rootLastRun.set(rootPath, {
+              rootLastRun.set(key, {
                 status: r.status || null,
                 duration_ms: durationMs,
                 finished_at: finishedAt
@@ -260,8 +274,9 @@ function getMergedIndexerState() {
     const per_machine = {};
     const seen_on = [];
     for (const r of records) {
-      seen_on.push(r.machineId);
+      seen_on.push(r.machineName || r.machineId);
       per_machine[r.machineId] = {
+        machine_name: r.machineName || r.machineId,
         last_scan_at: r.last_scan_at,
         last_seen_at: r.last_seen_at,
         is_active: r.is_active,
@@ -289,7 +304,8 @@ function getMergedIndexerState() {
 
   // Merge manual roots by path
   const roots = [];
-  for (const [rootPath, records] of rootsByPath.entries()) {
+  for (const [rootKey, records] of rootsByPath.entries()) {
+    const rootPath = records[0]?.path || '';
     // Winner: newest last_scan_at
     let winner = records[0];
     for (const r of records) {
@@ -301,8 +317,9 @@ function getMergedIndexerState() {
     const per_machine = {};
     const seen_on = [];
     for (const r of records) {
-      seen_on.push(r.machineId);
+      seen_on.push(r.machineName || r.machineId);
       per_machine[r.machineId] = {
+        machine_name: r.machineName || r.machineId,
         id: r.id,
         last_scan_at: r.last_scan_at,
         is_active: r.is_active,
@@ -311,8 +328,8 @@ function getMergedIndexerState() {
     }
 
     const uniqMachines = Array.from(new Set(seen_on));
-    const agg = rootAgg.get(rootPath) || { file_count: 0, dir_count: 0, total_bytes: 0 };
-    const lastRun = rootLastRun.get(rootPath) || { status: null, duration_ms: null };
+    const agg = rootAgg.get(rootKey) || { file_count: 0, dir_count: 0, total_bytes: 0 };
+    const lastRun = rootLastRun.get(rootKey) || { status: null, duration_ms: null };
 
     roots.push({
       ...winner,

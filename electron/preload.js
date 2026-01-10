@@ -23,6 +23,10 @@ contextBridge.exposeInMainWorld('electronAPI', {
     return await ipcRenderer.invoke('fs:showItem', filePath);
   },
 
+  pathExists: async (filePath) => {
+    return await ipcRenderer.invoke('fs:pathExists', filePath);
+  },
+
 
 
   searchQuery: async (query, opts) =>
@@ -34,11 +38,26 @@ contextBridge.exposeInMainWorld('electronAPI', {
   getMediaInfo: async (filePath) =>
     ipcRenderer.invoke('search:getMediaInfo', filePath),
 
-  generateClipThumbnails: async (filePath) =>
-    ipcRenderer.invoke('search:generateClipThumbnails', filePath),
+  generateClipThumbnails: async (filePath, opts) =>
+    ipcRenderer.invoke('search:generateClipThumbnails', filePath, opts),
+  getWaveformCache: async (filePath) =>
+    ipcRenderer.invoke('media:getWaveformCache', filePath),
+  setWaveformCache: async (filePath, payload) =>
+    ipcRenderer.invoke('media:setWaveformCache', filePath, payload),
+  generateWaveformImage: async (filePath, opts) =>
+    ipcRenderer.invoke('media:generateWaveformImage', filePath, opts),
+  playWithFfplay: async (filePath) =>
+    ipcRenderer.invoke('media:playWithFfplay', filePath),
+  ensureProxyMp4: async (filePath) =>
+    ipcRenderer.invoke('media:ensureProxyMp4', filePath),
+  openWithApp: async (appName, filePath) =>
+    ipcRenderer.invoke('system:openWithApp', appName, filePath),
 
   getDirectoryContents: async (volumeUuid, rootPath, dirRelativePath) =>
     ipcRenderer.invoke('indexer:getDirectoryContents', volumeUuid, rootPath, dirRelativePath),
+
+  getDirectoryContentsRecursive: async (volumeUuid, rootPath, dirRelativePath, limit, offset) =>
+    ipcRenderer.invoke('indexer:getDirectoryContentsRecursive', volumeUuid, rootPath, dirRelativePath, limit, offset),
 
   getDirectoryStats: async (volumeUuid, rootPath, dirRelativePath) =>
     ipcRenderer.invoke('indexer:getDirectoryStats', volumeUuid, rootPath, dirRelativePath),
@@ -71,6 +90,9 @@ indexerSetVolumeActive: async (volumeUuid, isActive) =>
 indexerSetVolumeInterval: async (volumeUuid, intervalMs) =>
   ipcRenderer.invoke('indexer:setVolumeInterval', volumeUuid, intervalMs),
 
+indexerSetVolumeAutoPurge: async (volumeUuid, enabled) =>
+  ipcRenderer.invoke('indexer:setVolumeAutoPurge', volumeUuid, enabled),
+
 indexerAddManualRoot: async (rootPath) =>
   ipcRenderer.invoke('indexer:addManualRoot', rootPath),
 
@@ -102,6 +124,7 @@ scanIndexerNow: async (target) =>
 scanAllNow: async () => ipcRenderer.invoke('indexer:scanAllNow'),
 scanVolumeNow: async (volumeUuid) => ipcRenderer.invoke('indexer:scanVolumeNow', volumeUuid),
 scanManualRootNow: async (rootId) => ipcRenderer.invoke('indexer:scanManualRootNow', rootId),
+listVolumeFiles: async (volumeUuid, limit) => ipcRenderer.invoke('indexer:listVolumeFiles', volumeUuid, limit),
 
 onIndexerProgress: (callback) => {
   const listener = (_event, data) => callback(data);
@@ -119,6 +142,8 @@ setIndexerSetting: (key, value) => ipcRenderer.invoke('indexer:setSetting', key,
 
 checkFullDiskAccess: () => ipcRenderer.invoke('system:checkFullDiskAccess'),
 openFullDiskAccess: () => ipcRenderer.invoke('system:openFullDiskAccess'),
+getMountedVolumes: () => ipcRenderer.invoke('system:getMountedVolumes'),
+openPath: (filePath) => ipcRenderer.invoke('system:openPath', filePath),
 
 // Whisper transcription
 transcribeRequest: async (filePath) => ipcRenderer.invoke('transcribe:request', filePath),

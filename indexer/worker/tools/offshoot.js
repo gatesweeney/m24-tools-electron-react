@@ -54,6 +54,49 @@ function normalizeSourceName(s) {
   return t.startsWith('/') ? t.slice(1) : t;
 }
 
+function stripStatusPrefix(s) {
+  if (!s) return s;
+  return s
+    .replace(/^(ok|success|verified|warning|warn|error|failed)\s*[:\\-–|]\\s*/i, '')
+    .replace(/^\\[[^\\]]+\\]\\s*/, '')
+    .trim();
+}
+
+function normalizeRelativePath(entry, sourceName, rootPath) {
+  if (!entry) return null;
+  let p = entry.trim();
+
+  if (p.includes('->')) {
+    p = p.split('->')[0].trim();
+  }
+
+  p = stripStatusPrefix(p);
+  if (!p) return null;
+
+  if (rootPath && p.startsWith(rootPath)) {
+    p = p.slice(rootPath.length);
+  }
+
+  if (sourceName) {
+    if (p.startsWith(sourceName)) {
+      p = p.slice(sourceName.length);
+    }
+    if (p.startsWith(`/${sourceName}`)) {
+      p = p.slice(sourceName.length + 1);
+    }
+  }
+
+  p = p.replace(/^\/+/, '');
+  return p || null;
+}
+
+function statusFromLine(line) {
+  const l = (line || '').toLowerCase();
+  if (l.includes('error') || l.includes('failed')) return 'error';
+  if (l.includes('warning') || l.includes('warn')) return 'warn';
+  return 'ok';
+}
+
 function extractVolumeName(destPath) {
   if (!destPath) return null;
   const parts = destPath.split('/').filter(Boolean);
@@ -64,7 +107,8 @@ function hashId(str) {
   return crypto.createHash('sha1').update(str).digest('hex');
 }
 
-async function parseOffshootLog(logPath) {
+async function parseOffshootLog(logPath, opts = {}) {
+  const rootPath = opts.rootPath || null;
   const raw = await fsp.readFile(logPath, 'utf8');
   const lines = raw.split(/\r?\n/);
 
@@ -82,10 +126,13 @@ async function parseOffshootLog(logPath) {
     verification_mode: null,
     status: 'success',
     error_count: 0,
-    error_excerpt: null
+    error_excerpt: null,
+    transferred_files: []
   };
 
   const errors = [];
+
+  let inTransferredBlock = false;
 
   for (const line of lines) {
     const l = line.trim();
@@ -112,6 +159,25 @@ async function parseOffshootLog(logPath) {
 
     if (l.startsWith('Hash type:')) out.hash_type = l.replace('Hash type:', '').trim();
     if (l.startsWith('Verification Mode:')) out.verification_mode = l.replace('Verification Mode:', '').trim();
+
+    if (l.startsWith('-- Transferred files --')) {
+      inTransferredBlock = true;
+      continue;
+    }
+    if (l.startsWith('--')) {
+      inTransferredBlock = false;
+    }
+
+    if (inTransferredBlock && l.length > 0) {
+      const status = statusFromLine(l);
+      const rel = normalizeRelativePath(l, out.source_name, rootPath);
+      out.transferred_files.push({
+        raw: l,
+        relative_path: rel,
+        status,
+        message: status === 'ok' ? null : l
+      });
+    }
 
     // Error-ish detection
     if (l.toLowerCase().includes('error') || l.toLowerCase().includes('failed') || l.toLowerCase().includes('warning')) {

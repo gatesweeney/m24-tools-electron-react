@@ -23,6 +23,15 @@ function stablePickIndices(seedStr, count, max) {
   return Array.from(picked);
 }
 
+function volumeThumbTargets(volumeUuid) {
+  const baseThumbs = getThumbsDir();
+  return [
+    path.join(baseThumbs, `volume_${volumeUuid}_t1.jpg`),
+    path.join(baseThumbs, `volume_${volumeUuid}_t2.jpg`),
+    path.join(baseThumbs, `volume_${volumeUuid}_t3.jpg`)
+  ];
+}
+
 async function copyFileSafe(src, dst) {
   try {
     await fsp.copyFile(src, dst);
@@ -37,11 +46,35 @@ function isLikelyUnsupportedThumbExt(filePath) {
   return ext === '.r3d' || ext === '.braw';
 }
 
+async function ffprobeDuration(inputPath, { timeoutMs = 15000 } = {}) {
+  const ffprobe = binPath('ffprobe');
+  return new Promise((resolve) => {
+    const args = [
+      '-v', 'error',
+      '-show_entries', 'format=duration',
+      '-of', 'default=noprint_wrappers=1:nokey=1',
+      inputPath
+    ];
+    const p = spawn(ffprobe, args, { stdio: ['ignore', 'pipe', 'ignore'] });
+    let out = '';
+    const timer = setTimeout(() => {
+      try { p.kill('SIGKILL'); } catch {}
+      resolve(0);
+    }, timeoutMs);
+    p.stdout.on('data', (d) => { out += d.toString(); });
+    p.on('close', () => {
+      clearTimeout(timer);
+      const v = parseFloat(out.trim());
+      resolve(Number.isFinite(v) ? v : 0);
+    });
+  });
+}
+
 /**
  * Try to create a jpg thumbnail from a video file using ffmpeg.
  * Returns true on success.
  */
-async function ffmpegThumb(inputPath, outPath, { timeoutMs = 15000 } = {}) {
+async function ffmpegThumb(inputPath, outPath, { timeoutMs = 15000, seekSeconds = 3 } = {}) {
   // Allow override in env
     const ffmpeg = binPath('ffmpeg');
 
@@ -51,7 +84,7 @@ async function ffmpegThumb(inputPath, outPath, { timeoutMs = 15000 } = {}) {
     // scale=320:-1: width 320
     const args = [
       '-y',
-      '-ss', '3',
+      '-ss', String(seekSeconds),
       '-i', inputPath,
       '-frames:v', '1',
       '-vf', 'scale=320:-1',
@@ -83,15 +116,8 @@ async function ffmpegThumb(inputPath, outPath, { timeoutMs = 15000 } = {}) {
  * Returns { thumb1, thumb2, thumb3 } local stored paths.
  */
 async function storeVolumeThumbsFromPaths(volumeUuid, sourceThumbPaths) {
-  const baseThumbs = getThumbsDir();
-  const volDir = path.join(baseThumbs, volumeUuid);
-  ensureDir(volDir);
-
-  const targets = [
-    path.join(volDir, 't1.jpg'),
-    path.join(volDir, 't2.jpg'),
-    path.join(volDir, 't3.jpg')
-  ];
+  const targets = volumeThumbTargets(volumeUuid);
+  ensureDir(getThumbsDir());
 
   const out = { thumb1: null, thumb2: null, thumb3: null };
 
@@ -116,15 +142,8 @@ async function storeVolumeThumbsFromPaths(volumeUuid, sourceThumbPaths) {
  * videoFiles: array of absolute file paths
  */
 async function generateVolumeThumbsFfmpeg(volumeUuid, videoFiles) {
-  const baseThumbs = getThumbsDir();
-  const volDir = path.join(baseThumbs, volumeUuid);
-  ensureDir(volDir);
-
-  const targets = [
-    path.join(volDir, 't1.jpg'),
-    path.join(volDir, 't2.jpg'),
-    path.join(volDir, 't3.jpg')
-  ];
+  const targets = volumeThumbTargets(volumeUuid);
+  ensureDir(getThumbsDir());
 
   const out = { thumb1: null, thumb2: null, thumb3: null };
 
@@ -146,7 +165,25 @@ async function generateVolumeThumbsFfmpeg(volumeUuid, videoFiles) {
   return out;
 }
 
+function fileThumbTarget(volumeUuid, rootPath, relativePath) {
+  const baseThumbs = getThumbsDir();
+  const isManual = volumeUuid && volumeUuid.startsWith('manual:');
+  const keyBase = isManual ? `${rootPath || ''}|${relativePath || ''}` : `${volumeUuid || 'unknown'}|${relativePath || ''}`;
+  const key = keyBase || `${volumeUuid || 'unknown'}|${relativePath || ''}`;
+  const hash = crypto.createHash('sha1').update(key).digest('hex');
+  return path.join(baseThumbs, `file_${hash}.jpg`);
+}
+
+async function generateFileThumbMid(filePath, outPath) {
+  const duration = await ffprobeDuration(filePath);
+  if (!duration) return false;
+  const t = Math.max(0, Math.floor(duration / 2));
+  return ffmpegThumb(filePath, outPath, { timeoutMs: 20000, seekSeconds: t });
+}
+
 module.exports = {
   storeVolumeThumbsFromPaths,
-  generateVolumeThumbsFfmpeg
+  generateVolumeThumbsFfmpeg,
+  fileThumbTarget,
+  generateFileThumbMid
 };

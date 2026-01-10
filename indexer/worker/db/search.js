@@ -22,6 +22,8 @@ function normalizeFileRow(row, machineId) {
     ctime: row.ctime || null,
     is_dir: !!row.is_dir,
     file_type: row.file_type || null,
+    offshoot_status: row.offshoot_status || null,
+    offshoot_message: row.offshoot_message || null,
     path: row.root_path
       ? `${row.root_path}/${row.relative_path}`.replace(/\/+/g, '/')
       : row.relative_path,
@@ -158,11 +160,53 @@ function searchLocalDb(db, q, opts = {}) {
     : '';
 
   const sql = `
-    SELECT f.*,
-           m.duration_sec, m.width, m.height, m.video_codec, m.audio_codec,
-           m.audio_sample_rate, m.audio_channels, m.bitrate, m.format_name
+    SELECT
+      f.*,
+      m.duration_sec, m.width, m.height, m.video_codec, m.audio_codec,
+      m.audio_sample_rate, m.audio_channels, m.bitrate, m.format_name,
+      CASE
+        WHEN f.is_dir = 1 THEN
+          CASE
+            WHEN EXISTS (
+              SELECT 1 FROM offshoot_files of
+              WHERE of.volume_uuid = f.volume_uuid
+                AND of.root_path = f.root_path
+                AND of.relative_path LIKE f.relative_path || '/%'
+                AND of.status = 'error'
+            ) THEN 'error'
+            WHEN EXISTS (
+              SELECT 1 FROM offshoot_files of
+              WHERE of.volume_uuid = f.volume_uuid
+                AND of.root_path = f.root_path
+                AND of.relative_path LIKE f.relative_path || '/%'
+                AND of.status = 'warn'
+            ) THEN 'warn'
+            WHEN EXISTS (
+              SELECT 1 FROM offshoot_files of
+              WHERE of.volume_uuid = f.volume_uuid
+                AND of.root_path = f.root_path
+                AND of.relative_path LIKE f.relative_path || '/%'
+                AND of.status = 'ok'
+            ) THEN 'ok'
+            ELSE NULL
+          END
+        ELSE of.status
+      END AS offshoot_status,
+      CASE
+        WHEN f.is_dir = 1 THEN (
+          SELECT message FROM offshoot_files of
+          WHERE of.volume_uuid = f.volume_uuid
+            AND of.root_path = f.root_path
+            AND of.relative_path LIKE f.relative_path || '/%'
+            AND of.status IN ('error', 'warn')
+          LIMIT 1
+        )
+        ELSE of.message
+      END AS offshoot_message
     FROM files f
     LEFT JOIN media_metadata m ON m.file_id = f.id
+    LEFT JOIN offshoot_files of ON
+      of.volume_uuid = f.volume_uuid AND of.root_path = f.root_path AND of.relative_path = f.relative_path
     ${whereClause}
     LIMIT ?
   `;
@@ -225,9 +269,14 @@ function searchMerged(q, opts = {}) {
     }
 
     try {
+      let machineName = machineId;
+      try {
+        const row = db.prepare(`SELECT value FROM settings WHERE key = ?`).get('machine_name');
+        if (row?.value) machineName = row.value;
+      } catch {}
       const localResults = searchLocalDb(db, q, opts);
       for (const r of localResults) {
-        results.push({ ...r, machineId });
+        results.push({ ...r, machineId, machineName });
       }
     } catch {
       // ignore errors per DB
@@ -236,11 +285,11 @@ function searchMerged(q, opts = {}) {
     }
   }
 
-  // Deduplicate by volume_uuid + path (case sensitive)
+  // Deduplicate by machine + volume_uuid + path (case sensitive)
   const seen = new Set();
   const uniqueResults = [];
   for (const r of results) {
-    const key = `${r.volume_uuid}::${r.path}`;
+    const key = `${r.machineId}::${r.volume_uuid}::${r.path}`;
     if (seen.has(key)) continue;
     seen.add(key);
     uniqueResults.push(r);

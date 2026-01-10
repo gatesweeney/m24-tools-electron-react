@@ -4,6 +4,7 @@ const { runA2Files } = require('./layers/A2_Files');
 const { runA3Stats } = require('./layers/A3_stats');
 const { runA4Logs } = require('./layers/A4_logs');
 const { runA5Thumbs } = require('./layers/A5_thumbs');
+const { runA6FileThumbs } = require('./layers/A6_fileThumbs');
 const { runB2Metadata } = require('./layers/B2_Metadata');
 
 // Detailed scan stubs (we implement next)
@@ -35,6 +36,9 @@ async function runVolumeScan({ db, volume, cancelToken, progress }) {
   await runA5Thumbs({ db, volume, cancelToken, progress });
   if (cancelToken.cancelled) return { ok: false, cancelled: true };
 
+  await runA6FileThumbs({ db, volume, cancelToken, progress });
+  if (cancelToken.cancelled) return { ok: false, cancelled: true };
+
   // DETAILED
   await runB1Refresh({ db, volume, cancelToken, progress, volume_uuid });
   if (cancelToken.cancelled) return { ok: false, cancelled: true };
@@ -64,6 +68,9 @@ async function runManualRootScan({ db, root, cancelToken, progress }) {
   if (cancelToken.cancelled) return { ok: false, cancelled: true };
 
   await runA3Stats({ db, volume: fakeVolume, cancelToken, progress });
+  if (cancelToken.cancelled) return { ok: false, cancelled: true };
+
+  await runA6FileThumbs({ db, volume: fakeVolume, cancelToken, progress });
   if (cancelToken.cancelled) return { ok: false, cancelled: true };
 
   // DETAILED - run ffprobe on media files

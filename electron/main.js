@@ -12,6 +12,7 @@ const { resolveBin } = require('./binPath');
 const { startIndexerWorker } = require('./workerLauncher');
 const crypto = require('crypto');
 const indexerQueries = require('../indexer/worker/db/queries');
+const { getThumbsDir, getLutsDir } = require('../indexer/worker/config/paths');
 const { searchIndexer } = require('../indexer/worker/db/search');
 const worker = require('../indexer/worker/main');
 const { sendWorkerMessage, getLatestIndexerStatus, onWorkerMessage } = require('./workerLauncher');
@@ -19,6 +20,7 @@ const { sendWorkerMessage, getLatestIndexerStatus, onWorkerMessage } = require('
 const ytDlpPath = resolveBin('bin/yt-dlp-macos-arm64');
 const ffmpegPath = resolveBin('bin/ffmpeg-macos-arm64');
 const ffprobePath = resolveBin('bin/ffprobe-macos-arm64');
+const ffplayPath = resolveBin('bin/ffplay') || resolveBin('bin/ffplay-macos-arm64');
 
 if (!ytDlpPath) throw new Error('yt-dlp binary missing');
 if (!ffmpegPath) throw new Error('ffmpeg binary missing');
@@ -261,6 +263,8 @@ app.whenReady().then(() => {
   ensureTray();
 
   startIndexerWorker();
+  getLutsDir();
+  startMaintenanceLoops();
 
   if (mainWindow) {
     mainWindow.setTitle('M24 Tools');
@@ -309,6 +313,29 @@ ipcMain.handle('fs:showItem', async (event, filePath) => {
     return { ok: true };
   } catch (err) {
     console.error('Error showing item in folder:', err);
+    return { ok: false, error: err.message || String(err) };
+  }
+});
+
+ipcMain.handle('system:openWithApp', async (_evt, appName, filePath) => {
+  try {
+    if (!filePath || !appName) return { ok: false, error: 'Missing app or file path' };
+    await new Promise((resolve, reject) => {
+      const p = spawn('open', ['-a', appName, filePath]);
+      p.on('error', reject);
+      p.on('close', (code) => (code === 0 ? resolve() : reject(new Error(`open exited ${code}`))));
+    });
+    return { ok: true };
+  } catch (e) {
+    return { ok: false, error: e.message || String(e) };
+  }
+});
+
+ipcMain.handle('fs:pathExists', async (_evt, filePath) => {
+  try {
+    if (!filePath) return { ok: true, exists: false };
+    return { ok: true, exists: fs.existsSync(filePath) };
+  } catch (err) {
     return { ok: false, error: err.message || String(err) };
   }
 });
@@ -467,6 +494,15 @@ ipcMain.handle('indexer:getDirectoryContents', async (_evt, volumeUuid, rootPath
   }
 });
 
+ipcMain.handle('indexer:getDirectoryContentsRecursive', async (_evt, volumeUuid, rootPath, dirRelativePath, limit, offset) => {
+  try {
+    const files = indexerQueries.getDirectoryContentsRecursive(volumeUuid, rootPath, dirRelativePath, limit, offset);
+    return { ok: true, files };
+  } catch (e) {
+    return { ok: false, error: e.message || String(e) };
+  }
+});
+
 ipcMain.handle('indexer:getDirectoryStats', async (_evt, volumeUuid, rootPath, dirRelativePath) => {
   try {
     const stats = indexerQueries.getDirectoryStats(volumeUuid, rootPath, dirRelativePath);
@@ -487,6 +523,14 @@ ipcMain.handle('indexer:setVolumeActive', async (_evt, volumeUuid, isActive) => 
 ipcMain.handle('indexer:setVolumeInterval', async (_evt, volumeUuid, intervalMs) => {
   try {
     return { ok: true, state: indexerQueries.setVolumeInterval(volumeUuid, intervalMs) };
+  } catch (e) {
+    return { ok: false, error: e.message || String(e) };
+  }
+});
+
+ipcMain.handle('indexer:setVolumeAutoPurge', async (_evt, volumeUuid, enabled) => {
+  try {
+    return { ok: true, state: indexerQueries.setVolumeAutoPurge(volumeUuid, enabled) };
   } catch (e) {
     return { ok: false, error: e.message || String(e) };
   }
@@ -558,17 +602,49 @@ ipcMain.handle('indexer:disableAndDeleteManualRootData', async (_evt, rootId) =>
 
 ipcMain.handle('indexer:scanAllNow', async () => {
   const queued = sendWorkerMessage({ cmd: 'manualScan', payload: { type: 'scanAll' } });
-  return { ok: queued };
+  return queued ? { ok: true } : { ok: false, error: 'Indexer worker not running.' };
 });
 
 ipcMain.handle('indexer:scanVolumeNow', async (_evt, volumeUuid) => {
-  const queued = sendWorkerMessage({ cmd: 'manualScan', payload: { type: 'volume', volumeUuid } });
-  return { ok: queued };
+  try {
+    const vol = indexerQueries.getVolumeByUuid(volumeUuid);
+    if (!vol) return { ok: false, error: 'Volume not found.' };
+    const mountPoint = vol.mount_point_last;
+    if (!mountPoint || !fs.existsSync(mountPoint)) {
+      return { ok: false, error: 'Drive not connected.' };
+    }
+    const queued = sendWorkerMessage({ cmd: 'manualScan', payload: { type: 'volume', volumeUuid } });
+    return queued ? { ok: true } : { ok: false, error: 'Indexer worker not running.' };
+  } catch (e) {
+    return { ok: false, error: e.message || String(e) };
+  }
 });
 
 ipcMain.handle('indexer:scanManualRootNow', async (_evt, rootId) => {
-  const queued = sendWorkerMessage({ cmd: 'manualScan', payload: { type: 'manualRoot', rootId } });
-  return { ok: queued };
+  try {
+    const root = indexerQueries.getManualRootById?.(rootId);
+    if (!root) return { ok: false, error: 'Manual root not found.' };
+    if (!root.path || !fs.existsSync(root.path)) {
+      return { ok: false, error: 'Folder not accessible.' };
+    }
+    const queued = sendWorkerMessage({ cmd: 'manualScan', payload: { type: 'manualRoot', rootId } });
+    return queued ? { ok: true } : { ok: false, error: 'Indexer worker not running.' };
+  } catch (e) {
+    return { ok: false, error: e.message || String(e) };
+  }
+});
+
+ipcMain.handle('indexer:listVolumeFiles', async (_evt, volumeUuid, limit = 500) => {
+  try {
+    const vol = indexerQueries.getVolumeByUuid(volumeUuid);
+    if (!vol) return { ok: false, error: 'Volume not found.' };
+    const rootPath = vol.mount_point_last;
+    if (!rootPath) return { ok: false, error: 'Volume not mounted.' };
+    const files = indexerQueries.getDirectoryContentsRecursive(volumeUuid, rootPath, '', limit, 0);
+    return { ok: true, files };
+  } catch (e) {
+    return { ok: false, error: e.message || String(e) };
+  }
 });
 
 ipcMain.handle('indexer:status', async () => {
@@ -675,8 +751,94 @@ async function runFfprobe(filePath) {
   });
 }
 
-// Clip thumbnail cache
-const CLIP_THUMB_CACHE_DIR = path.join(os.homedir(), 'Library', 'Caches', 'M24Tools', 'clip-thumbs');
+// Shared thumbnail cache (stored under Documents/M24Index/thumbs)
+const CLIP_THUMB_CACHE_DIR = getThumbsDir();
+
+function todayStamp() {
+  return new Date().toISOString().slice(0, 10).replace(/-/g, '');
+}
+
+function waveformCachePath(filePath, stats) {
+  const sig = `${filePath}|${stats?.size || 0}|${stats?.mtimeMs || 0}`;
+  const hash = crypto.createHash('md5').update(sig).digest('hex');
+  return path.join(CLIP_THUMB_CACHE_DIR, `waveform_${hash}.json`);
+}
+
+function waveformImagePath(filePath, stats, opts = {}) {
+  const sig = `${filePath}|${stats?.size || 0}|${stats?.mtimeMs || 0}|${opts.width || 0}x${opts.height || 0}|${opts.colors || ''}|${opts.gainDb || 0}`;
+  const hash = crypto.createHash('md5').update(sig).digest('hex');
+  return path.join(CLIP_THUMB_CACHE_DIR, `waveform_${hash}.png`);
+}
+
+function readThumbCacheMaxBytes() {
+  const raw = indexerQueries.getSetting?.('thumb_cache_max_gb');
+  const num = parseFloat(raw || '0');
+  if (!Number.isFinite(num) || num <= 0) return 0;
+  return Math.floor(num * 1024 * 1024 * 1024);
+}
+
+function getProtectedThumbsSet() {
+  const paths = indexerQueries.getVolumeThumbPaths?.() || [];
+  const set = new Set();
+  for (const p of paths) {
+    if (p) set.add(path.resolve(p));
+  }
+  return set;
+}
+
+function runThumbCacheMaintenance() {
+  try {
+    const maxBytes = readThumbCacheMaxBytes();
+    if (!maxBytes) return;
+
+    if (!fs.existsSync(CLIP_THUMB_CACHE_DIR)) return;
+
+    const protectedThumbs = getProtectedThumbsSet();
+    const entries = fs.readdirSync(CLIP_THUMB_CACHE_DIR);
+    const files = [];
+
+    for (const name of entries) {
+      const full = path.join(CLIP_THUMB_CACHE_DIR, name);
+      let stat = null;
+      try { stat = fs.statSync(full); } catch { continue; }
+      if (!stat.isFile()) continue;
+      if (protectedThumbs.has(path.resolve(full))) continue;
+      files.push({ path: full, size: stat.size, mtimeMs: stat.mtimeMs });
+    }
+
+    let total = files.reduce((sum, f) => sum + f.size, 0);
+    if (total <= maxBytes) return;
+
+    files.sort((a, b) => a.mtimeMs - b.mtimeMs);
+    for (const f of files) {
+      try { fs.unlinkSync(f.path); } catch {}
+      total -= f.size;
+      if (total <= maxBytes) break;
+    }
+  } catch (e) {
+    console.log('[thumb-cache] cleanup failed', e?.message || e);
+  }
+}
+
+function runAutoPurgeMaintenance() {
+  try {
+    const raw = indexerQueries.getSetting?.('volume_purge_age_days');
+    const days = parseInt(raw || '0', 10);
+    if (!Number.isFinite(days) || days <= 0) return;
+    const cutoff = new Date(Date.now() - days * 24 * 60 * 60 * 1000).toISOString();
+    indexerQueries.purgeFilesOlderThan?.(cutoff);
+  } catch (e) {
+    console.log('[auto-purge] failed', e?.message || e);
+  }
+}
+
+function startMaintenanceLoops() {
+  runThumbCacheMaintenance();
+  runAutoPurgeMaintenance();
+  const hourMs = 60 * 60 * 1000;
+  setInterval(runThumbCacheMaintenance, hourMs);
+  setInterval(runAutoPurgeMaintenance, hourMs);
+}
 
 function spawnFfmpegAsync(args) {
   return new Promise((resolve, reject) => {
@@ -689,18 +851,14 @@ function spawnFfmpegAsync(args) {
   });
 }
 
-async function generateClipThumbnails(filePath) {
+async function generateClipThumbnails(filePath, opts = {}) {
   try {
     fs.mkdirSync(CLIP_THUMB_CACHE_DIR, { recursive: true });
 
+    const datePrefix = todayStamp();
     const hash = crypto.createHash('md5').update(filePath).digest('hex');
-    const thumb1 = path.join(CLIP_THUMB_CACHE_DIR, `${hash}_1.jpg`);
-    const thumb2 = path.join(CLIP_THUMB_CACHE_DIR, `${hash}_2.jpg`);
-
-    // Check if already cached
-    if (fs.existsSync(thumb1) && fs.existsSync(thumb2)) {
-      return { ok: true, thumbs: [thumb1, thumb2] };
-    }
+    const countRaw = parseInt(opts.count, 10);
+    const count = Number.isFinite(countRaw) ? Math.max(1, Math.min(countRaw, 12)) : 8;
 
     // Get duration first
     const mediaInfo = await runFfprobe(filePath);
@@ -709,21 +867,28 @@ async function generateClipThumbnails(filePath) {
       return { ok: false, error: 'Cannot determine duration' };
     }
 
-    // Generate at 25% and 75% of duration
-    const t1 = Math.max(0, Math.floor(duration * 0.25));
-    const t2 = Math.max(0, Math.floor(duration * 0.75));
+    const times = [];
+    const thumbs = [];
+    for (let i = 0; i < count; i += 1) {
+      const t = Math.max(0, Math.floor(((i + 1) / (count + 1)) * duration));
+      const thumbPath = path.join(CLIP_THUMB_CACHE_DIR, `${datePrefix}_${hash}_clip${i + 1}.jpg`);
+      if (!fs.existsSync(thumbPath)) {
+        await spawnFfmpegAsync(['-y', '-ss', String(t), '-i', filePath, '-frames:v', '1', '-q:v', '2', thumbPath]);
+      }
+      if (fs.existsSync(thumbPath)) {
+        thumbs.push(thumbPath);
+        times.push(t);
+      }
+    }
 
-    await spawnFfmpegAsync(['-y', '-ss', String(t1), '-i', filePath, '-frames:v', '1', '-q:v', '2', thumb1]);
-    await spawnFfmpegAsync(['-y', '-ss', String(t2), '-i', filePath, '-frames:v', '1', '-q:v', '2', thumb2]);
-
-    return { ok: true, thumbs: [thumb1, thumb2] };
+    return { ok: true, thumbs, times };
   } catch (e) {
     return { ok: false, error: e.message || String(e) };
   }
 }
 
-ipcMain.handle('search:generateClipThumbnails', async (_evt, filePath) => {
-  return generateClipThumbnails(filePath);
+ipcMain.handle('search:generateClipThumbnails', async (_evt, filePath, opts) => {
+  return generateClipThumbnails(filePath, opts);
 });
 
 // Batch thumbnail generation for directory listing (limited concurrency)
@@ -733,6 +898,8 @@ ipcMain.handle('search:generateBatchThumbnails', async (_evt, files) => {
 
   const results = {};
   const concurrency = 3;
+  const datePrefix = todayStamp();
+  try { fs.mkdirSync(CLIP_THUMB_CACHE_DIR, { recursive: true }); } catch {}
 
   // Filter to media files only
   const mediaFiles = files.filter(f => {
@@ -750,7 +917,7 @@ ipcMain.handle('search:generateBatchThumbnails', async (_evt, files) => {
         // Generate video thumbnail (single frame at 25%)
         try {
           const hash = crypto.createHash('md5').update(file.path).digest('hex');
-          const thumbPath = path.join(CLIP_THUMB_CACHE_DIR, `${hash}_thumb.jpg`);
+          const thumbPath = path.join(CLIP_THUMB_CACHE_DIR, `${datePrefix}_${hash}_dir.jpg`);
 
           if (fs.existsSync(thumbPath)) {
             results[file.path] = thumbPath;
@@ -770,8 +937,20 @@ ipcMain.handle('search:generateBatchThumbnails', async (_evt, files) => {
           // Skip failed thumbnails
         }
       } else if (IMAGE_EXTS.includes(ext)) {
-        // For images, just use the original file path (browser can display)
-        results[file.path] = file.path;
+        try {
+          const hash = crypto.createHash('md5').update(file.path).digest('hex');
+          const thumbPath = path.join(CLIP_THUMB_CACHE_DIR, `${datePrefix}_${hash}_img.jpg`);
+          if (fs.existsSync(thumbPath)) {
+            results[file.path] = thumbPath;
+            return;
+          }
+          await spawnFfmpegAsync(['-y', '-i', file.path, '-frames:v', '1', '-vf', 'scale=120:-1', '-q:v', '3', thumbPath]);
+          if (fs.existsSync(thumbPath)) {
+            results[file.path] = thumbPath;
+          }
+        } catch (e) {
+          // Skip failed thumbnails
+        }
       }
     });
 
@@ -779,6 +958,125 @@ ipcMain.handle('search:generateBatchThumbnails', async (_evt, files) => {
   }
 
   return { ok: true, thumbnails: results };
+});
+
+ipcMain.handle('media:getWaveformCache', async (_evt, filePath) => {
+  try {
+    if (!filePath) return { ok: false, error: 'Missing file path' };
+    const stats = fs.statSync(filePath);
+    const cachePath = waveformCachePath(filePath, stats);
+    if (!fs.existsSync(cachePath)) return { ok: true, peaks: null, duration: null };
+    const raw = fs.readFileSync(cachePath, 'utf8');
+    const data = JSON.parse(raw);
+    return { ok: true, peaks: data.peaks || null, duration: data.duration || null };
+  } catch (e) {
+    return { ok: false, error: e.message || String(e) };
+  }
+});
+
+ipcMain.handle('media:setWaveformCache', async (_evt, filePath, payload) => {
+  try {
+    if (!filePath || !payload) return { ok: false, error: 'Missing data' };
+    const stats = fs.statSync(filePath);
+    const cachePath = waveformCachePath(filePath, stats);
+    fs.mkdirSync(CLIP_THUMB_CACHE_DIR, { recursive: true });
+    const out = {
+      duration: payload.duration || 0,
+      peaks: Array.isArray(payload.peaks) ? payload.peaks : []
+    };
+    fs.writeFileSync(cachePath, JSON.stringify(out));
+    return { ok: true };
+  } catch (e) {
+    return { ok: false, error: e.message || String(e) };
+  }
+});
+
+ipcMain.handle('media:generateWaveformImage', async (_evt, filePath, opts = {}) => {
+  try {
+    if (!filePath) return { ok: false, error: 'Missing file path' };
+    const stats = fs.statSync(filePath);
+    const width = Math.max(200, Math.min(parseInt(opts.width, 10) || 900, 2000));
+    const height = Math.max(60, Math.min(parseInt(opts.height, 10) || 120, 400));
+    const outPath = waveformImagePath(filePath, stats, { width, height, colors: opts.colors, gainDb: opts.gainDb });
+    if (fs.existsSync(outPath)) return { ok: true, path: outPath };
+
+    fs.mkdirSync(CLIP_THUMB_CACHE_DIR, { recursive: true });
+    const colors = opts.colors || opts.color || '#7ea0b7';
+    const gainDb = Number.isFinite(Number(opts.gainDb)) ? Number(opts.gainDb) : 0;
+    const gainFilter = gainDb !== 0 ? `volume=${gainDb}dB,` : '';
+    const filter = `${gainFilter}showwavespic=s=${width}x${height}:colors=${colors},format=rgba`;
+
+    await spawnFfmpegAsync([
+      '-y',
+      '-i', filePath,
+      '-filter_complex', filter,
+      '-frames:v', '1',
+      '-color_range', 'pc',
+      outPath
+    ]);
+
+    if (!fs.existsSync(outPath)) {
+      return { ok: false, error: 'Waveform render failed' };
+    }
+
+    return { ok: true, path: outPath };
+  } catch (e) {
+    return { ok: false, error: e.message || String(e) };
+  }
+});
+
+ipcMain.handle('media:playWithFfplay', async (_evt, filePath) => {
+  try {
+    if (!filePath) return { ok: false, error: 'Missing file path' };
+    const exe = ffplayPath || 'ffplay';
+    const args = ['-sync', 'ext', '-fflags', 'nobuffer', '-flags', 'low_delay', filePath];
+    const p = spawn(exe, args, { stdio: 'ignore', detached: true });
+    p.unref();
+    return { ok: true };
+  } catch (e) {
+    return { ok: false, error: e.message || String(e) };
+  }
+});
+
+ipcMain.handle('media:ensureProxyMp4', async (_evt, filePath) => {
+  try {
+    if (!filePath) return { ok: false, error: 'Missing file path' };
+    const stats = fs.statSync(filePath);
+    const sig = `${filePath}|${stats.size}|${stats.mtimeMs}`;
+    const hash = crypto.createHash('md5').update(sig).digest('hex');
+    const outDir = path.join(CLIP_THUMB_CACHE_DIR, 'proxies');
+    const outPath = path.join(outDir, `${hash}.mp4`);
+    if (fs.existsSync(outPath)) return { ok: true, path: outPath };
+
+    fs.mkdirSync(outDir, { recursive: true });
+
+    await new Promise((resolve, reject) => {
+      const args = [
+        '-y',
+        '-i', filePath,
+        '-c:v', 'libx264',
+        '-preset', 'veryfast',
+        '-crf', '20',
+        '-pix_fmt', 'yuv420p',
+        '-c:a', 'aac',
+        '-b:a', '192k',
+        '-movflags', '+faststart',
+        outPath
+      ];
+      const p = spawn(ffmpegPath, args, { stdio: ['ignore', 'ignore', 'pipe'] });
+      let stderr = '';
+      p.stderr.on('data', (d) => { stderr += d.toString(); });
+      p.on('error', reject);
+      p.on('close', (code) => {
+        if (code === 0 && fs.existsSync(outPath)) resolve();
+        else reject(new Error(stderr || `ffmpeg exited ${code}`));
+      });
+    });
+
+    return { ok: true, path: outPath };
+  } catch (e) {
+    return { ok: false, error: e.message || String(e) };
+  }
 });
 
 ipcMain.handle('indexer:getSetting', async (_evt, key) => {
@@ -837,6 +1135,26 @@ ipcMain.handle('system:openFullDiskAccess', async () => {
     } catch (e2) {
       return { ok: false, error: e2.message || String(e2) };
     }
+  }
+});
+
+ipcMain.handle('system:getMountedVolumes', async () => {
+  try {
+    const { getUnifiedMounts } = require('../indexer/worker/platform/mounts');
+    const mounts = getUnifiedMounts().filter((m) => m.kind === 'volume');
+    return { ok: true, mounts };
+  } catch (e) {
+    return { ok: false, error: e.message || String(e) };
+  }
+});
+
+ipcMain.handle('system:openPath', async (_evt, filePath) => {
+  try {
+    if (!filePath) return { ok: false, error: 'Missing path.' };
+    await shell.openPath(filePath);
+    return { ok: true };
+  } catch (e) {
+    return { ok: false, error: e.message || String(e) };
   }
 });
 

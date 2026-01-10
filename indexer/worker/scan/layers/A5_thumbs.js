@@ -1,6 +1,8 @@
 // indexer/worker/scan/layers/A5_thumbs.js
 const path = require('path');
+const fs = require('fs');
 const { storeVolumeThumbsFromPaths, generateVolumeThumbsFfmpeg } = require('../../tools/thumbs');
+const { getThumbsDir } = require('../../config/paths');
 
 function nowIso() {
   return new Date().toISOString();
@@ -9,6 +11,7 @@ function nowIso() {
 async function runA5Thumbs({ db, volume, cancelToken, progress }) {
   const volumeUuid = volume.volume_uuid;
   const rootPath = volume.mount_point;
+  const sharedThumbsDir = getThumbsDir();
 
   // Only run thumbs on first-seen (per your requirement):
   // if thumbs already stored for this volume, skip.
@@ -19,8 +22,30 @@ async function runA5Thumbs({ db, volume, cancelToken, progress }) {
   `).get(volumeUuid);
 
   if (v && (v.thumb1_path || v.thumb2_path || v.thumb3_path)) {
-    progress?.({ stage: 'A5_thumbs_skip', volume_uuid: volumeUuid, reason: 'already_generated' });
-    return;
+    const existing = [v.thumb1_path, v.thumb2_path, v.thumb3_path].filter(Boolean);
+    const hasLocal = existing.some((p) => p && p.startsWith(sharedThumbsDir + path.sep));
+    const onDisk = existing.filter((p) => p && fs.existsSync(p));
+    if (hasLocal && onDisk.length > 0) {
+      progress?.({ stage: 'A5_thumbs_skip', volume_uuid: volumeUuid, reason: 'already_generated' });
+      return;
+    }
+    if (onDisk.length > 0) {
+      const stored = await storeVolumeThumbsFromPaths(volumeUuid, [
+        v.thumb1_path,
+        v.thumb2_path,
+        v.thumb3_path
+      ]);
+      db.prepare(`
+        UPDATE volumes
+        SET thumb1_path = ?,
+            thumb2_path = ?,
+            thumb3_path = ?
+        WHERE volume_uuid = ?
+      `).run(stored.thumb1, stored.thumb2, stored.thumb3, volumeUuid);
+
+      progress?.({ stage: 'A5_thumbs_migrated', volume_uuid: volumeUuid });
+      return;
+    }
   }
 
   progress?.({ stage: 'A5_thumbs_start', volume_uuid: volumeUuid });

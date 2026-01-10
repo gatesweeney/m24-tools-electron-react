@@ -1,5 +1,6 @@
 // indexer/worker/scan/layers/A4_logs.js
 const fs = require('fs');
+const crypto = require('crypto');
 const { findTransferLogs, listTxtLogs, parseOffshootLog } = require('../../tools/offshoot');
 const { findReportsFolders, parseFoolcatReport } = require('../../tools/foolcat');
 
@@ -26,7 +27,7 @@ async function runA4Logs({ db, volume, cancelToken, progress }) {
 
       try {
         const st = fs.statSync(logPath);
-        const parsed = await parseOffshootLog(logPath);
+        const parsed = await parseOffshootLog(logPath, { rootPath });
 
         db.prepare(`
           INSERT INTO offshoot_jobs (
@@ -73,6 +74,35 @@ async function runA4Logs({ db, volume, cancelToken, progress }) {
         );
 
         offshootCount++;
+
+        // Store per-file offshoot status
+        if (Array.isArray(parsed.transferred_files) && parsed.transferred_files.length) {
+          const jobId = parsed.id;
+          db.prepare(`DELETE FROM offshoot_files WHERE job_id = ?`).run(jobId);
+
+          const insert = db.prepare(`
+            INSERT OR REPLACE INTO offshoot_files (
+              id, job_id, volume_uuid, root_path, relative_path,
+              status, message, log_path, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+          `);
+
+          for (const f of parsed.transferred_files) {
+            if (!f.relative_path) continue;
+            const id = crypto.createHash('sha1').update(`${jobId}|${f.relative_path}`).digest('hex');
+            insert.run(
+              id,
+              jobId,
+              volumeUuid,
+              rootPath,
+              f.relative_path,
+              f.status || 'ok',
+              f.message || null,
+              logPath,
+              nowIso()
+            );
+          }
+        }
       } catch {
         // ignore parse errors for now
       }

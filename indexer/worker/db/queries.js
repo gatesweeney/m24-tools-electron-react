@@ -4,6 +4,10 @@ const { getMergedIndexerState } = require('./merge');
 
 function getLocalIndexerState() {
   const db = openDb();
+  const machineRow = db.prepare(`SELECT value FROM settings WHERE key = ?`).get('machine_id');
+  const machineNameRow = db.prepare(`SELECT value FROM settings WHERE key = ?`).get('machine_name');
+  const machineId = machineRow?.value || 'local';
+  const machineName = machineNameRow?.value || machineId;
 
   const drives = db.prepare(`
     SELECT *
@@ -76,7 +80,9 @@ function getLocalIndexerState() {
     return {
       ...d,
       last_run_status: r?.status || null,
-      last_run_duration_ms: r?.duration_ms || null
+      last_run_duration_ms: r?.duration_ms || null,
+      seen_on: [machineName],
+      seen_count: 1
     };
   });
 
@@ -85,7 +91,9 @@ function getLocalIndexerState() {
     return {
       ...r,
       last_run_status: rr?.status || null,
-      last_run_duration_ms: rr?.duration_ms || null
+      last_run_duration_ms: rr?.duration_ms || null,
+      seen_on: [machineId],
+      seen_count: 1
     };
   });
 
@@ -118,6 +126,17 @@ function setVolumeInterval(volumeUuid, intervalMs) {
     SET scan_interval_ms = ?
     WHERE volume_uuid = ?
   `).run(intervalMs, volumeUuid);
+  db.close();
+  return getIndexerState();
+}
+
+function setVolumeAutoPurge(volumeUuid, enabled) {
+  const db = openDb();
+  db.prepare(`
+    UPDATE volumes
+    SET auto_purge = ?
+    WHERE volume_uuid = ?
+  `).run(enabled ? 1 : 0, volumeUuid);
   db.close();
   return getIndexerState();
 }
@@ -179,6 +198,12 @@ function disableVolume(volumeUuid) {
 function disableAndDeleteVolumeData(volumeUuid) {
   const db = openDb();
 
+  const thumbs = db.prepare(`
+    SELECT thumb1_path, thumb2_path, thumb3_path
+    FROM volumes
+    WHERE volume_uuid = ?
+  `).get(volumeUuid);
+
   db.prepare(`
     UPDATE volumes
     SET is_active = 0
@@ -192,6 +217,11 @@ function disableAndDeleteVolumeData(volumeUuid) {
   `).run(volumeUuid);
   db.prepare(`DELETE FROM offshoot_jobs WHERE volume_uuid = ?`).run(volumeUuid);
   db.prepare(`DELETE FROM foolcat_reports WHERE volume_uuid = ?`).run(volumeUuid);
+
+  const thumbPaths = [thumbs?.thumb1_path, thumbs?.thumb2_path, thumbs?.thumb3_path].filter(Boolean);
+  for (const p of thumbPaths) {
+    try { require('fs').unlinkSync(p); } catch {}
+  }
 
   try { db.exec('PRAGMA wal_checkpoint(TRUNCATE);'); } catch {}
   try { db.exec('VACUUM;'); } catch {}
@@ -245,6 +275,13 @@ function disableAndDeleteManualRootData(rootId) {
   return getIndexerState();
 }
 
+function getManualRootById(rootId) {
+  const db = openDb();
+  const root = db.prepare(`SELECT * FROM manual_roots WHERE id = ?`).get(rootId);
+  db.close();
+  return root || null;
+}
+
 function getSetting(key) {
   const db = openDb();
   const row = db.prepare(`SELECT value FROM settings WHERE key = ?`).get(key);
@@ -257,6 +294,34 @@ function getVolumeByUuid(volumeUuid) {
   const vol = db.prepare(`SELECT * FROM volumes WHERE volume_uuid = ?`).get(volumeUuid);
   db.close();
   return vol || null;
+}
+
+function getVolumeThumbPaths() {
+  const db = openDb();
+  const rows = db.prepare(`
+    SELECT thumb1_path, thumb2_path, thumb3_path
+    FROM volumes
+  `).all();
+  db.close();
+  const out = [];
+  for (const r of rows) {
+    if (r.thumb1_path) out.push(r.thumb1_path);
+    if (r.thumb2_path) out.push(r.thumb2_path);
+    if (r.thumb3_path) out.push(r.thumb3_path);
+  }
+  return out;
+}
+
+function purgeFilesOlderThan(cutoffIso) {
+  const db = openDb();
+  const res = db.prepare(`
+    DELETE FROM files
+    WHERE volume_uuid IN (SELECT volume_uuid FROM volumes WHERE auto_purge = 1)
+      AND last_seen_at IS NOT NULL
+      AND last_seen_at < ?
+  `).run(cutoffIso);
+  db.close();
+  return res.changes || 0;
 }
 
 function setSetting(key, value) {
@@ -288,9 +353,52 @@ function getDirectoryContents(volumeUuid, rootPath, dirRelativePath) {
   if (prefix === '') {
     // Root level - get items with no slash in relative_path
     rows = db.prepare(`
-      SELECT f.*, m.duration_sec, m.width, m.height, m.video_codec, m.audio_codec, m.format_name
+      SELECT
+        f.*,
+        m.duration_sec, m.width, m.height, m.video_codec, m.audio_codec, m.format_name,
+        CASE
+          WHEN f.is_dir = 1 THEN
+            CASE
+              WHEN EXISTS (
+                SELECT 1 FROM offshoot_files of
+                WHERE of.volume_uuid = f.volume_uuid
+                  AND of.root_path = f.root_path
+                  AND of.relative_path LIKE f.relative_path || '/%'
+                  AND of.status = 'error'
+              ) THEN 'error'
+              WHEN EXISTS (
+                SELECT 1 FROM offshoot_files of
+                WHERE of.volume_uuid = f.volume_uuid
+                  AND of.root_path = f.root_path
+                  AND of.relative_path LIKE f.relative_path || '/%'
+                  AND of.status = 'warn'
+              ) THEN 'warn'
+              WHEN EXISTS (
+                SELECT 1 FROM offshoot_files of
+                WHERE of.volume_uuid = f.volume_uuid
+                  AND of.root_path = f.root_path
+                  AND of.relative_path LIKE f.relative_path || '/%'
+                  AND of.status = 'ok'
+              ) THEN 'ok'
+              ELSE NULL
+            END
+          ELSE of.status
+        END AS offshoot_status,
+        CASE
+          WHEN f.is_dir = 1 THEN (
+            SELECT message FROM offshoot_files of
+            WHERE of.volume_uuid = f.volume_uuid
+              AND of.root_path = f.root_path
+              AND of.relative_path LIKE f.relative_path || '/%'
+              AND of.status IN ('error', 'warn')
+            LIMIT 1
+          )
+          ELSE of.message
+        END AS offshoot_message
       FROM files f
       LEFT JOIN media_metadata m ON m.file_id = f.id
+      LEFT JOIN offshoot_files of ON
+        of.volume_uuid = f.volume_uuid AND of.root_path = f.root_path AND of.relative_path = f.relative_path
       WHERE f.volume_uuid = ?
         AND f.root_path = ?
         AND f.relative_path NOT LIKE '%/%'
@@ -300,9 +408,52 @@ function getDirectoryContents(volumeUuid, rootPath, dirRelativePath) {
     `).all(volumeUuid, rootPath);
   } else {
     rows = db.prepare(`
-      SELECT f.*, m.duration_sec, m.width, m.height, m.video_codec, m.audio_codec, m.format_name
+      SELECT
+        f.*,
+        m.duration_sec, m.width, m.height, m.video_codec, m.audio_codec, m.format_name,
+        CASE
+          WHEN f.is_dir = 1 THEN
+            CASE
+              WHEN EXISTS (
+                SELECT 1 FROM offshoot_files of
+                WHERE of.volume_uuid = f.volume_uuid
+                  AND of.root_path = f.root_path
+                  AND of.relative_path LIKE f.relative_path || '/%'
+                  AND of.status = 'error'
+              ) THEN 'error'
+              WHEN EXISTS (
+                SELECT 1 FROM offshoot_files of
+                WHERE of.volume_uuid = f.volume_uuid
+                  AND of.root_path = f.root_path
+                  AND of.relative_path LIKE f.relative_path || '/%'
+                  AND of.status = 'warn'
+              ) THEN 'warn'
+              WHEN EXISTS (
+                SELECT 1 FROM offshoot_files of
+                WHERE of.volume_uuid = f.volume_uuid
+                  AND of.root_path = f.root_path
+                  AND of.relative_path LIKE f.relative_path || '/%'
+                  AND of.status = 'ok'
+              ) THEN 'ok'
+              ELSE NULL
+            END
+          ELSE of.status
+        END AS offshoot_status,
+        CASE
+          WHEN f.is_dir = 1 THEN (
+            SELECT message FROM offshoot_files of
+            WHERE of.volume_uuid = f.volume_uuid
+              AND of.root_path = f.root_path
+              AND of.relative_path LIKE f.relative_path || '/%'
+              AND of.status IN ('error', 'warn')
+            LIMIT 1
+          )
+          ELSE of.message
+        END AS offshoot_message
       FROM files f
       LEFT JOIN media_metadata m ON m.file_id = f.id
+      LEFT JOIN offshoot_files of ON
+        of.volume_uuid = f.volume_uuid AND of.root_path = f.root_path AND of.relative_path = f.relative_path
       WHERE f.volume_uuid = ?
         AND f.root_path = ?
         AND f.relative_path LIKE ?
@@ -315,6 +466,139 @@ function getDirectoryContents(volumeUuid, rootPath, dirRelativePath) {
   db.close();
 
   // Normalize rows to include full path
+  return rows.map(r => ({
+    ...r,
+    is_dir: !!r.is_dir,
+    path: rootPath ? `${rootPath}/${r.relative_path}`.replace(/\/+/g, '/') : r.relative_path
+  }));
+}
+
+/**
+ * Get all descendants of a directory (recursive).
+ * Used for recursive filtering in the detail panel.
+ */
+function getDirectoryContentsRecursive(volumeUuid, rootPath, dirRelativePath, limit = 250, offset = 0) {
+  const db = openDb();
+
+  const prefix = (!dirRelativePath || dirRelativePath === '.' || dirRelativePath === '')
+    ? ''
+    : `${dirRelativePath}/`;
+
+  let rows;
+  if (prefix === '') {
+    rows = db.prepare(`
+      SELECT
+        f.*,
+        m.duration_sec, m.width, m.height, m.video_codec, m.audio_codec, m.format_name,
+        CASE
+          WHEN f.is_dir = 1 THEN
+            CASE
+              WHEN EXISTS (
+                SELECT 1 FROM offshoot_files of
+                WHERE of.volume_uuid = f.volume_uuid
+                  AND of.root_path = f.root_path
+                  AND of.relative_path LIKE f.relative_path || '/%'
+                  AND of.status = 'error'
+              ) THEN 'error'
+              WHEN EXISTS (
+                SELECT 1 FROM offshoot_files of
+                WHERE of.volume_uuid = f.volume_uuid
+                  AND of.root_path = f.root_path
+                  AND of.relative_path LIKE f.relative_path || '/%'
+                  AND of.status = 'warn'
+              ) THEN 'warn'
+              WHEN EXISTS (
+                SELECT 1 FROM offshoot_files of
+                WHERE of.volume_uuid = f.volume_uuid
+                  AND of.root_path = f.root_path
+                  AND of.relative_path LIKE f.relative_path || '/%'
+                  AND of.status = 'ok'
+              ) THEN 'ok'
+              ELSE NULL
+            END
+          ELSE of.status
+        END AS offshoot_status,
+        CASE
+          WHEN f.is_dir = 1 THEN (
+            SELECT message FROM offshoot_files of
+            WHERE of.volume_uuid = f.volume_uuid
+              AND of.root_path = f.root_path
+              AND of.relative_path LIKE f.relative_path || '/%'
+              AND of.status IN ('error', 'warn')
+            LIMIT 1
+          )
+          ELSE of.message
+        END AS offshoot_message
+      FROM files f
+      LEFT JOIN media_metadata m ON m.file_id = f.id
+      LEFT JOIN offshoot_files of ON
+        of.volume_uuid = f.volume_uuid AND of.root_path = f.root_path AND of.relative_path = f.relative_path
+      WHERE f.volume_uuid = ?
+        AND f.root_path = ?
+        AND f.relative_path != ''
+      ORDER BY f.is_dir DESC, f.name ASC
+      LIMIT ?
+      OFFSET ?
+    `).all(volumeUuid, rootPath, limit, offset);
+  } else {
+    rows = db.prepare(`
+      SELECT
+        f.*,
+        m.duration_sec, m.width, m.height, m.video_codec, m.audio_codec, m.format_name,
+        CASE
+          WHEN f.is_dir = 1 THEN
+            CASE
+              WHEN EXISTS (
+                SELECT 1 FROM offshoot_files of
+                WHERE of.volume_uuid = f.volume_uuid
+                  AND of.root_path = f.root_path
+                  AND of.relative_path LIKE f.relative_path || '/%'
+                  AND of.status = 'error'
+              ) THEN 'error'
+              WHEN EXISTS (
+                SELECT 1 FROM offshoot_files of
+                WHERE of.volume_uuid = f.volume_uuid
+                  AND of.root_path = f.root_path
+                  AND of.relative_path LIKE f.relative_path || '/%'
+                  AND of.status = 'warn'
+              ) THEN 'warn'
+              WHEN EXISTS (
+                SELECT 1 FROM offshoot_files of
+                WHERE of.volume_uuid = f.volume_uuid
+                  AND of.root_path = f.root_path
+                  AND of.relative_path LIKE f.relative_path || '/%'
+                  AND of.status = 'ok'
+              ) THEN 'ok'
+              ELSE NULL
+            END
+          ELSE of.status
+        END AS offshoot_status,
+        CASE
+          WHEN f.is_dir = 1 THEN (
+            SELECT message FROM offshoot_files of
+            WHERE of.volume_uuid = f.volume_uuid
+              AND of.root_path = f.root_path
+              AND of.relative_path LIKE f.relative_path || '/%'
+              AND of.status IN ('error', 'warn')
+            LIMIT 1
+          )
+          ELSE of.message
+        END AS offshoot_message
+      FROM files f
+      LEFT JOIN media_metadata m ON m.file_id = f.id
+      LEFT JOIN offshoot_files of ON
+        of.volume_uuid = f.volume_uuid AND of.root_path = f.root_path AND of.relative_path = f.relative_path
+      WHERE f.volume_uuid = ?
+        AND f.root_path = ?
+        AND f.relative_path LIKE ?
+      ORDER BY f.is_dir DESC, f.name ASC
+      LIMIT ?
+      OFFSET ?
+    `).all(volumeUuid, rootPath, `${prefix}%`, limit, offset);
+  }
+
+  db.close();
+
   return rows.map(r => ({
     ...r,
     is_dir: !!r.is_dir,
@@ -365,6 +649,7 @@ module.exports = {
   getLocalIndexerState,
   setVolumeActive,
   setVolumeInterval,
+  setVolumeAutoPurge,
   addManualRoot,
   setManualRootActive,
   setManualRootInterval,
@@ -373,9 +658,13 @@ module.exports = {
   disableAndDeleteVolumeData,
   disableManualRoot,
   disableAndDeleteManualRootData,
+  getManualRootById,
   getSetting,
   setSetting,
   getVolumeByUuid,
+  getVolumeThumbPaths,
+  purgeFilesOlderThan,
   getDirectoryContents,
+  getDirectoryContentsRecursive,
   getDirectoryStats
 };

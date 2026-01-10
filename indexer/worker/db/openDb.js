@@ -24,6 +24,7 @@ function migrateToV1(db) {
       last_scan_at     TEXT,
       scan_interval_ms INTEGER DEFAULT 1200000, -- 20 min default
       is_active        INTEGER DEFAULT 1,
+      auto_purge       INTEGER DEFAULT 1,
       auto_added       INTEGER DEFAULT 1,
       tags             TEXT,
       physical_location TEXT,
@@ -57,6 +58,7 @@ function migrateToV1(db) {
       mtime         INTEGER,
       ctime         INTEGER,
       file_type     TEXT,
+      thumb_path    TEXT,
       last_seen_at  TEXT,
       status        TEXT NOT NULL DEFAULT 'present',
       UNIQUE(volume_uuid, root_path, relative_path)
@@ -121,6 +123,21 @@ function migrateToV1(db) {
       last_parsed_at TEXT
     );
 
+    CREATE TABLE IF NOT EXISTS offshoot_files (
+      id            TEXT PRIMARY KEY,
+      job_id        TEXT,
+      volume_uuid   TEXT,
+      root_path     TEXT,
+      relative_path TEXT,
+      status        TEXT,
+      message       TEXT,
+      log_path      TEXT,
+      updated_at    TEXT
+    );
+
+    CREATE INDEX IF NOT EXISTS offshoot_files_lookup_idx
+      ON offshoot_files(volume_uuid, root_path, relative_path);
+
     CREATE TABLE IF NOT EXISTS foolcat_reports (
       id             TEXT PRIMARY KEY,
       volume_uuid    TEXT,
@@ -147,6 +164,15 @@ function ensureColumns(db) {
 
   add('duration_ms', 'duration_ms INTEGER');
   add('result', 'result TEXT'); // if you want separate from status
+
+  const volumeCols = db.prepare(`PRAGMA table_info(volumes)`).all().map(r => r.name);
+  const addVolume = (name, ddl) => { if (!volumeCols.includes(name)) db.exec(`ALTER TABLE volumes ADD COLUMN ${ddl}`); };
+  addVolume('auto_purge', 'auto_purge INTEGER DEFAULT 1');
+  db.exec(`UPDATE volumes SET auto_purge = 1 WHERE auto_purge IS NULL`);
+
+  const fileCols = db.prepare(`PRAGMA table_info(files)`).all().map(r => r.name);
+  const addFile = (name, ddl) => { if (!fileCols.includes(name)) db.exec(`ALTER TABLE files ADD COLUMN ${ddl}`); };
+  addFile('thumb_path', 'thumb_path TEXT');
 
   // Ensure media_metadata table exists (for existing databases)
   db.exec(`
@@ -181,6 +207,20 @@ function ensureColumns(db) {
       model           TEXT
     );
     CREATE INDEX IF NOT EXISTS transcriptions_path_idx ON transcriptions(file_path);
+
+    CREATE TABLE IF NOT EXISTS offshoot_files (
+      id            TEXT PRIMARY KEY,
+      job_id        TEXT,
+      volume_uuid   TEXT,
+      root_path     TEXT,
+      relative_path TEXT,
+      status        TEXT,
+      message       TEXT,
+      log_path      TEXT,
+      updated_at    TEXT
+    );
+    CREATE INDEX IF NOT EXISTS offshoot_files_lookup_idx
+      ON offshoot_files(volume_uuid, root_path, relative_path);
   `);
 }
 
@@ -197,10 +237,15 @@ function openDb() {
 
   // Store machine_id in settings for reference
   const { machineId } = getMachineDir();
+  const machineName = require('os').hostname();
   db.prepare(`
     INSERT INTO settings(key, value) VALUES ('machine_id', ?)
     ON CONFLICT(key) DO UPDATE SET value=excluded.value
   `).run(machineId);
+  db.prepare(`
+    INSERT INTO settings(key, value) VALUES ('machine_name', ?)
+    ON CONFLICT(key) DO UPDATE SET value=excluded.value
+  `).run(machineName);
 
   ensureColumns(db);
 

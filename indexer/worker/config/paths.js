@@ -37,15 +37,25 @@ function getDbPath() {
 }
 
 function getThumbsDir() {
-  const { machineDir } = getMachineDir();
-  const thumbsDir = path.join(machineDir, 'thumbs');
+  const base = getBaseDir();
+  ensureDir(base);
+  const thumbsDir = path.join(base, 'thumbs');
   ensureDir(thumbsDir);
   return thumbsDir;
+}
+
+function getLutsDir() {
+  const base = getBaseDir();
+  ensureDir(base);
+  const lutsDir = path.join(base, 'luts');
+  ensureDir(lutsDir);
+  return lutsDir;
 }
 
 module.exports = {
   getBaseDir,
   getMachineDir,
   getDbPath,
-  getThumbsDir
+  getThumbsDir,
+  getLutsDir
 };

@@ -9,6 +9,7 @@ import YouTubeDownloaderPage from './pages/YouTubeDownloaderPage';
 import YouTubeSimplePage from './pages/YouTubeSimplePage';
 import IndexerPage from './pages/IndexerPage';
 import SearchPage from './pages/SearchPage';
+import AssetDetailPage from './pages/AssetDetailPage';
 import IndexerProgressStrip from './components/IndexerProgressStrip';
 import { useEffect, useState } from 'react';
 
@@ -114,6 +115,7 @@ const cancelCurrent = async () => {
       <Route path="/youtube-simple" element={<YouTubeSimplePage />} />
       <Route path="/indexer" element={<IndexerPage />} />
       <Route path="/search" element={<SearchPage />} />
+      <Route path="/detail" element={<AssetDetailPage />} />
     </Routes>
       <IndexerProgressStrip
         progress={indexerProgress}
