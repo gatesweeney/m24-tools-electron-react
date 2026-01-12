@@ -1,7 +1,7 @@
 {
-  "name": "m24-tools",
-  "productName": "M24 Tools",
-  "version": "1.1.0",
+  "name": "m24",
+  "productName": "M24",
+  "version": "1.1.1-beta",
   "private": true,
   "homepage": ".",
   "main": "electron/main.js",
