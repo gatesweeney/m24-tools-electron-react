@@ -32,8 +32,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
   searchQuery: async (query, opts) =>
     ipcRenderer.invoke('search:query', query, opts || {}),
 
-  getVolumeInfo: async (volumeUuid) =>
-    ipcRenderer.invoke('search:getVolumeInfo', volumeUuid),
+  getVolumeInfo: async (volumeUuid, deviceId) =>
+    ipcRenderer.invoke('search:getVolumeInfo', volumeUuid, deviceId),
 
   getMediaInfo: async (filePath) =>
     ipcRenderer.invoke('search:getMediaInfo', filePath),
@@ -53,14 +53,31 @@ contextBridge.exposeInMainWorld('electronAPI', {
   openWithApp: async (appName, filePath) =>
     ipcRenderer.invoke('system:openWithApp', appName, filePath),
 
-  getDirectoryContents: async (volumeUuid, rootPath, dirRelativePath) =>
-    ipcRenderer.invoke('indexer:getDirectoryContents', volumeUuid, rootPath, dirRelativePath),
+  checkForUpdates: async () =>
+    ipcRenderer.invoke('updater:check'),
+  getUpdateStatus: async () =>
+    ipcRenderer.invoke('updater:getStatus'),
+  quitAndInstallUpdate: async () =>
+    ipcRenderer.invoke('updater:quitAndInstall'),
+  onUpdateEvent: (callback) => {
+    const listener = (_event, data) => callback(data);
+    ipcRenderer.on('updater:event', listener);
+    return () => ipcRenderer.removeListener('updater:event', listener);
+  },
+  onShowUpdateDialog: (callback) => {
+    const listener = () => callback();
+    ipcRenderer.on('ui:showUpdateDialog', listener);
+    return () => ipcRenderer.removeListener('ui:showUpdateDialog', listener);
+  },
 
-  getDirectoryContentsRecursive: async (volumeUuid, rootPath, dirRelativePath, limit, offset) =>
-    ipcRenderer.invoke('indexer:getDirectoryContentsRecursive', volumeUuid, rootPath, dirRelativePath, limit, offset),
+getDirectoryContents: async (volumeUuid, rootPath, dirRelativePath, deviceId) =>
+  ipcRenderer.invoke('indexer:getDirectoryContents', volumeUuid, rootPath, dirRelativePath, deviceId),
 
-  getDirectoryStats: async (volumeUuid, rootPath, dirRelativePath) =>
-    ipcRenderer.invoke('indexer:getDirectoryStats', volumeUuid, rootPath, dirRelativePath),
+getDirectoryContentsRecursive: async (volumeUuid, rootPath, dirRelativePath, limit, offset, deviceId) =>
+  ipcRenderer.invoke('indexer:getDirectoryContentsRecursive', volumeUuid, rootPath, dirRelativePath, limit, offset, deviceId),
+
+getDirectoryStats: async (volumeUuid, rootPath, dirRelativePath, deviceId) =>
+  ipcRenderer.invoke('indexer:getDirectoryStats', volumeUuid, rootPath, dirRelativePath, deviceId),
 
   generateBatchThumbnails: async (files) =>
     ipcRenderer.invoke('search:generateBatchThumbnails', files),

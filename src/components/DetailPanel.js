@@ -230,11 +230,13 @@ export default function DetailPanel({
             const res = await window.electronAPI.getDirectoryContents(
               item.volume_uuid,
               item.root_path,
-              item.relative_path
+              item.relative_path,
+              item.device_id
             );
             if (res?.ok) {
               files = (res.files || []).map((f) => ({
                 ...f,
+                device_id: f.device_id || item?.device_id,
                 path: f.path || buildPath(f.root_path || item?.root_path, f.relative_path)
               }));
               setContents(files);
@@ -246,7 +248,8 @@ export default function DetailPanel({
             const statsRes = await window.electronAPI.getDirectoryStats(
               item.volume_uuid,
               item.root_path,
-              item.relative_path
+              item.relative_path,
+              item.device_id
             );
             if (statsRes?.ok) {
               setStats(statsRes.stats);
@@ -271,7 +274,7 @@ export default function DetailPanel({
           let ffprobeData = null;
 
           if (item.volume_uuid && window.electronAPI?.getVolumeInfo) {
-            const volumeRes = await window.electronAPI.getVolumeInfo(item.volume_uuid);
+            const volumeRes = await window.electronAPI.getVolumeInfo(item.volume_uuid, item.device_id);
             if (volumeRes?.ok) volume = volumeRes.volume;
           }
 
@@ -336,11 +339,13 @@ export default function DetailPanel({
           item.root_path,
           item.relative_path,
           RECURSIVE_PAGE_SIZE,
-          0
+          0,
+          item.device_id
         );
         if (!cancelled && res?.ok) {
           const files = (res.files || []).map((f) => ({
             ...f,
+            device_id: f.device_id || item?.device_id,
             path: f.path || buildPath(f.root_path || item?.root_path, f.relative_path)
           }));
           setRecursiveContents(files);
@@ -387,6 +392,7 @@ export default function DetailPanel({
       relative_path: cleanRel,
       name,
       path,
+      device_id: item?.device_id,
       is_dir: true
     };
   }, [item?.path, item?.root_path, item?.volume_uuid, rootLabel]);
@@ -481,10 +487,14 @@ export default function DetailPanel({
       item.root_path,
       item.relative_path,
       RECURSIVE_PAGE_SIZE,
-      recursiveOffset
+      recursiveOffset,
+      item.device_id
     );
       if (res?.ok) {
-        const files = res.files || [];
+        const files = (res.files || []).map((f) => ({
+          ...f,
+          device_id: f.device_id || item?.device_id
+        }));
         setRecursiveContents((prev) => [...prev, ...files]);
         setRecursiveOffset((prev) => prev + files.length);
         setRecursiveHasMore(files.length >= 250);

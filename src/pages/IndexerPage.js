@@ -11,6 +11,7 @@ import Switch from '@mui/material/Switch';
 import FormControl from '@mui/material/FormControl';
 import Select from '@mui/material/Select';
 import MenuItem from '@mui/material/MenuItem';
+import Checkbox from '@mui/material/Checkbox';
 import TextField from '@mui/material/TextField';
 import { DataGridPro, GridToolbar } from '@mui/x-data-grid-pro';
 import Tooltip from '@mui/material/Tooltip';
@@ -101,7 +102,7 @@ export default function IndexerPage() {
   const [thumbCacheGb, setThumbCacheGb] = useState('10');
   const [purgeAgeDays, setPurgeAgeDays] = useState('0');
   const [settingsLoaded, setSettingsLoaded] = useState(false);
-  const [machineFilter, setMachineFilter] = useState('All');
+  const [machineFilter, setMachineFilter] = useState([]);
   const [apiTokenDialogOpen, setApiTokenDialogOpen] = useState(false);
   const [apiTokenValue, setApiTokenValue] = useState('');
   const [apiTokenChecked, setApiTokenChecked] = useState(false);
@@ -359,18 +360,34 @@ export default function IndexerPage() {
   }, [state.roots, localMachineId]);
 
   const machineOptions = useMemo(() => {
-    const names = new Set();
+    const options = [];
+    const fromDevices = Array.isArray(state.devices) ? state.devices : [];
+    if (fromDevices.length > 0) {
+      for (const d of fromDevices) {
+        if (!d?.deviceId) continue;
+        options.push({ id: d.deviceId, label: d.name || d.deviceId });
+      }
+      return options;
+    }
+
+    const ids = new Map();
     for (const d of state.drives || []) {
-      (d.seen_on || []).forEach((n) => n && names.add(n));
+      if (d.device_id) ids.set(d.device_id, d.device_id);
     }
     for (const r of state.roots || []) {
-      (r.seen_on || []).forEach((n) => n && names.add(n));
+      if (r.device_id) ids.set(r.device_id, r.device_id);
     }
-    return ['All', ...Array.from(names)];
-  }, [state.drives, state.roots]);
+    return Array.from(ids.keys()).map((id) => ({ id, label: id }));
+  }, [state.devices, state.drives, state.roots]);
+
+  const machineLabelById = useMemo(() => {
+    const map = new Map();
+    machineOptions.forEach((opt) => map.set(opt.id, opt.label));
+    return map;
+  }, [machineOptions]);
 
   const driveRows = (state.drives || [])
-    .filter((d) => machineFilter === 'All' || (d.seen_on || []).includes(machineFilter))
+    .filter((d) => machineFilter.length === 0 || machineFilter.includes(d.device_id))
     .map((d, idx) => ({ id: d.volume_uuid || idx, ...d }));
 
   const intervalOptions = [
@@ -451,17 +468,18 @@ export default function IndexerPage() {
                 disabled: false,
                 onClick: () => {
                   navigate('/detail', {
-                    state: {
-                      item: {
-                        volume_uuid: params.row.volume_uuid,
-                        root_path: params.row.mount_point_last,
-                        relative_path: '',
-                        name: params.row.volume_name || params.row.mount_point_last,
-                        path: params.row.mount_point_last,
-                        is_dir: true
-                      }
+                  state: {
+                    item: {
+                      volume_uuid: params.row.volume_uuid,
+                      root_path: params.row.mount_point_last,
+                      relative_path: '',
+                      name: params.row.volume_name || params.row.mount_point_last,
+                      path: params.row.mount_point_last,
+                      device_id: params.row.device_id,
+                      is_dir: true
                     }
-                  });
+                  }
+                });
                 }
               },
               {
@@ -561,10 +579,22 @@ export default function IndexerPage() {
           </Box>
           <Stack direction="row" spacing={1} alignItems="center">
             <Chip size="small" label={apiStatus.label} color={apiStatus.color} />
-            <FormControl size="small" sx={{ minWidth: 160 }}>
-              <Select value={machineFilter} onChange={(e) => setMachineFilter(e.target.value)}>
+            <FormControl size="small" sx={{ minWidth: 220 }}>
+              <Select
+                multiple
+                displayEmpty
+                value={machineFilter}
+                onChange={(e) => setMachineFilter(e.target.value)}
+                renderValue={(selected) => {
+                  if (!selected || selected.length === 0) return 'All Machines';
+                  return selected.map((id) => machineLabelById.get(id) || id).join(', ');
+                }}
+              >
                 {machineOptions.map((opt) => (
-                  <MenuItem key={opt} value={opt}>{opt}</MenuItem>
+                  <MenuItem key={opt.id} value={opt.id}>
+                    <Checkbox size="small" checked={machineFilter.includes(opt.id)} />
+                    <ListItemText primary={opt.label} />
+                  </MenuItem>
                 ))}
               </Select>
             </FormControl>
@@ -655,7 +685,7 @@ export default function IndexerPage() {
         <Box sx={{ height: 320, width: '100%', bgcolor: 'background.paper', borderRadius: 2 }}>
           <DataGridPro
             rows={(state.roots || [])
-              .filter((r) => machineFilter === 'All' || (r.seen_on || []).includes(machineFilter))
+              .filter((r) => machineFilter.length === 0 || machineFilter.includes(r.device_id))
               .map((r, idx) => ({ id: r.__rootId || r.id || r.path || idx, ...r }))}
             columns={[
               {
@@ -708,16 +738,17 @@ export default function IndexerPage() {
                           onClick: () => {
                             navigate('/detail', {
                               state: {
-                                item: {
-                                  volume_uuid: `manual:${params.row.__rootId || params.row.id}`,
-                                  root_path: params.row.path,
-                                  relative_path: '',
-                                  name: params.row.label || params.row.path,
-                                  path: params.row.path,
-                                  is_dir: true
-                                }
+                              item: {
+                                volume_uuid: `manual:${params.row.__rootId || params.row.id}`,
+                                root_path: params.row.path,
+                                relative_path: '',
+                                name: params.row.label || params.row.path,
+                                path: params.row.path,
+                                device_id: params.row.device_id,
+                                is_dir: true
                               }
-                            });
+                            }
+                          });
                           }
                         },
                         {

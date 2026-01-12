@@ -53,7 +53,7 @@ export default function NavBar() {
         style={{ height: 28, WebkitAppRegion: 'no-drag', marginRight: 12, pointerEvents: 'none' }}
       />
 </Box>
-        <Box sx={{ display: 'flex', gap: 1 }}>
+        <Box sx={{ display: 'flex', gap: 1, alignItems: 'center' }}>
           {pages.map((page) => {
             const active = location.pathname === page.path;
             return (

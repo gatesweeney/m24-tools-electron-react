@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useEffect, useState } from 'react';
 import { Routes, Route } from 'react-router-dom';
 import Box from '@mui/material/Box';
 import NavBar from './components/NavBar';
@@ -11,7 +11,7 @@ import IndexerPage from './pages/IndexerPage';
 import SearchPage from './pages/SearchPage';
 import AssetDetailPage from './pages/AssetDetailPage';
 import IndexerProgressStrip from './components/IndexerProgressStrip';
-import { useEffect, useState } from 'react';
+import UpdateDialog from './components/UpdateDialog';
 
 
 function App() {
@@ -19,6 +19,7 @@ function App() {
   const [indexerProgress, setIndexerProgress] = useState(null);
   const [indexerStatus, setIndexerStatus] = useState(null);
   const [isCancelling, setIsCancelling] = useState(false);
+  const [updateDialogOpen, setUpdateDialogOpen] = useState(false);
 
 useEffect(() => {
   if (!window.electronAPI?.onIndexerProgress) return;
@@ -86,6 +87,12 @@ const cancelCurrent = async () => {
   }
 };
 
+useEffect(() => {
+  if (!window.electronAPI?.onShowUpdateDialog) return undefined;
+  const unsub = window.electronAPI.onShowUpdateDialog(() => setUpdateDialogOpen(true));
+  return unsub;
+}, []);
+
 
   return (
     <Box
@@ -124,8 +131,9 @@ const cancelCurrent = async () => {
         onCancelCurrent={cancelCurrent}
       />
     
-      </Box>
+    </Box>
       <JobProgressBar />
+      <UpdateDialog open={updateDialogOpen} onClose={() => setUpdateDialogOpen(false)} />
     </Box>
   );
 }

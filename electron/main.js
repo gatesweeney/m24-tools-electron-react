@@ -3,6 +3,7 @@ console.log('Electron: starting');
 require('dotenv').config();
 
 const { app, BrowserWindow, ipcMain, dialog, Tray, Menu, nativeImage, Notification } = require('electron');
+const { autoUpdater } = require('electron-updater');
 const path = require('path');
 const fs = require('fs');
 const shell = require('electron').shell;
@@ -34,6 +35,8 @@ let mainWindow;
 
 let tray = null;
 let isQuitting = false;
+let updateInProgress = false;
+let lastUpdateStatus = { status: 'idle', info: null, progress: null, error: null };
 
 const REMOTE_API_URL = 'https://api1.motiontwofour.com';
 const REMOTE_API_ENABLED = process.env.M24_REMOTE_API_DISABLED !== '1';
@@ -66,9 +69,8 @@ function getRemoteDeviceId() {
 }
 
 async function remoteFetchState() {
-  const deviceId = encodeURIComponent(getRemoteDeviceId());
-  console.log('[remote] fetch state', { deviceId });
-  return remoteRequest(`/api/state?deviceId=${deviceId}`);
+  console.log('[remote] fetch state', { scope: 'all' });
+  return remoteRequest('/api/state');
 }
 
 async function remoteUpsertState({ volumes = [], manualRoots = [], files = [] } = {}) {
@@ -140,6 +142,108 @@ function notify(title, body, opts = {}) {
   } catch (e) {
     console.log('[notify] failed', e?.message || e);
   }
+}
+
+function setupUpdater() {
+  autoUpdater.autoDownload = false;
+
+  const sendUpdateStatus = (partial) => {
+    lastUpdateStatus = {
+      ...lastUpdateStatus,
+      ...partial
+    };
+    if (mainWindow) {
+      mainWindow.webContents.send('updater:event', lastUpdateStatus);
+    }
+  };
+
+  autoUpdater.on('checking-for-update', () => {
+    console.log('[updater] checking for update');
+    sendUpdateStatus({ status: 'checking', progress: null, error: null });
+  });
+  autoUpdater.on('update-available', (_evt, info) => {
+    updateInProgress = true;
+    console.log('[updater] update available');
+    notify('Update available', 'Downloading update…');
+    sendUpdateStatus({ status: 'available', info, progress: null, error: null });
+    autoUpdater.downloadUpdate().catch((err) => {
+      updateInProgress = false;
+      console.log('[updater] download failed', err?.message || err);
+      notify('Update failed', 'Could not download update.');
+      sendUpdateStatus({ status: 'error', error: err?.message || String(err) });
+    });
+  });
+  autoUpdater.on('update-not-available', () => {
+    updateInProgress = false;
+    console.log('[updater] no update available');
+    notify('No updates', 'You are up to date.');
+    sendUpdateStatus({ status: 'idle', error: null, progress: null });
+  });
+  autoUpdater.on('error', (err) => {
+    updateInProgress = false;
+    console.log('[updater] error', err?.message || err);
+    notify('Update error', 'Update check failed.');
+    sendUpdateStatus({ status: 'error', error: err?.message || String(err) });
+  });
+  autoUpdater.on('download-progress', (progress) => {
+    sendUpdateStatus({
+      status: 'downloading',
+      progress: {
+        percent: progress?.percent,
+        transferred: progress?.transferred,
+        total: progress?.total
+      }
+    });
+  });
+  autoUpdater.on('update-downloaded', (_evt, info) => {
+    updateInProgress = false;
+    console.log('[updater] update downloaded');
+    notify('Update ready', 'Restarting to install…');
+    sendUpdateStatus({ status: 'downloaded', info, progress: null, error: null });
+    setTimeout(() => autoUpdater.quitAndInstall(), 1500);
+  });
+}
+
+function createAppMenu() {
+  const template = [
+    ...(process.platform === 'darwin'
+      ? [{
+          label: app.name,
+          submenu: [
+            { role: 'about' },
+            { type: 'separator' },
+            {
+              label: 'Check for Updates…',
+              click: () => {
+                if (updateInProgress) {
+                  notify('Update in progress', 'Please wait…');
+                  return;
+                }
+                autoUpdater.checkForUpdates().catch((err) => {
+                  console.log('[updater] check failed', err?.message || err);
+                  notify('Update error', 'Update check failed.');
+                });
+              }
+            },
+            { type: 'separator' },
+            { role: 'services' },
+            { type: 'separator' },
+            { role: 'hide' },
+            { role: 'hideOthers' },
+            { role: 'unhide' },
+            { type: 'separator' },
+            { role: 'quit' }
+          ]
+        }]
+      : []),
+    { role: 'fileMenu' },
+    { role: 'editMenu' },
+    { role: 'viewMenu' },
+    { role: 'windowMenu' },
+    { role: 'help' }
+  ];
+  const menu = Menu.buildFromTemplate(template);
+  Menu.setApplicationMenu(menu);
 }
 
 const activeScans = new Map(); // key -> { startedAt, name }
@@ -300,6 +404,17 @@ function ensureTray() {
       }
     },
     {
+      label: 'Updates…',
+      click: () => {
+        if (!mainWindow) createWindow();
+        if (mainWindow) {
+          mainWindow.show();
+          mainWindow.focus();
+          mainWindow.webContents.send('ui:showUpdateDialog');
+        }
+      }
+    },
+    {
       label: 'Test Notification',
       click: () => {
         console.log('[tray] test notification clicked');
@@ -344,6 +459,8 @@ function ensureTray() {
 app.whenReady().then(() => {
   app.setName('M24 Tools');
 
+  setupUpdater();
+  createAppMenu();
   createWindow();
 
   ensureTray();
@@ -354,6 +471,12 @@ app.whenReady().then(() => {
 
   if (mainWindow) {
     mainWindow.setTitle('M24 Tools');
+  }
+
+  if (!isDev) {
+    autoUpdater.checkForUpdates().catch((err) => {
+      console.log('[updater] initial check failed', err?.message || err);
+    });
   }
 
   app.on('activate', function () {
@@ -423,6 +546,30 @@ ipcMain.handle('fs:pathExists', async (_evt, filePath) => {
     return { ok: true, exists: fs.existsSync(filePath) };
   } catch (err) {
     return { ok: false, error: err.message || String(err) };
+  }
+});
+
+ipcMain.handle('updater:check', async () => {
+  if (isDev) return { ok: false, error: 'Update checks are disabled in dev mode.' };
+  try {
+    await autoUpdater.checkForUpdates();
+    return { ok: true };
+  } catch (err) {
+    console.log('[updater] check failed', err?.message || err);
+    return { ok: false, error: err?.message || String(err) };
+  }
+});
+
+ipcMain.handle('updater:getStatus', async () => {
+  return { ok: true, status: lastUpdateStatus };
+});
+
+ipcMain.handle('updater:quitAndInstall', async () => {
+  try {
+    autoUpdater.quitAndInstall();
+    return { ok: true };
+  } catch (err) {
+    return { ok: false, error: err?.message || String(err) };
   }
 });
 
@@ -558,10 +705,10 @@ ipcMain.handle('search:query', async (_evt, q, opts) => {
   }
 });
 
-ipcMain.handle('search:getVolumeInfo', async (_evt, volumeUuid) => {
+ipcMain.handle('search:getVolumeInfo', async (_evt, volumeUuid, deviceId) => {
   try {
-    const deviceId = encodeURIComponent(getRemoteDeviceId());
-    const remote = await remoteRequest(`/api/volume?volumeUuid=${encodeURIComponent(volumeUuid)}&deviceId=${deviceId}`);
+    const encodedDeviceId = encodeURIComponent(deviceId || getRemoteDeviceId());
+    const remote = await remoteRequest(`/api/volume?volumeUuid=${encodeURIComponent(volumeUuid)}&deviceId=${encodedDeviceId}`);
     if (remote?.ok) return { ok: true, volume: remote.volume || null };
     return { ok: false, error: remote?.error || 'remote_unavailable' };
   } catch (e) {
@@ -578,10 +725,10 @@ ipcMain.handle('search:getMediaInfo', async (_evt, filePath) => {
   }
 });
 
-ipcMain.handle('indexer:getDirectoryContents', async (_evt, volumeUuid, rootPath, dirRelativePath) => {
+ipcMain.handle('indexer:getDirectoryContents', async (_evt, volumeUuid, rootPath, dirRelativePath, deviceId) => {
   try {
-    const deviceId = encodeURIComponent(getRemoteDeviceId());
-    const remote = await remoteRequest(`/api/dir/contents?volumeUuid=${encodeURIComponent(volumeUuid)}&rootPath=${encodeURIComponent(rootPath)}&dirRel=${encodeURIComponent(dirRelativePath || '')}&deviceId=${deviceId}`);
+    const encodedDeviceId = encodeURIComponent(deviceId || getRemoteDeviceId());
+    const remote = await remoteRequest(`/api/dir/contents?volumeUuid=${encodeURIComponent(volumeUuid)}&rootPath=${encodeURIComponent(rootPath)}&dirRel=${encodeURIComponent(dirRelativePath || '')}&deviceId=${encodedDeviceId}`);
     if (remote?.ok) return { ok: true, files: remote.files || [] };
     return { ok: false, error: remote?.error || 'remote_unavailable' };
   } catch (e) {
@@ -589,10 +736,10 @@ ipcMain.handle('indexer:getDirectoryContents', async (_evt, volumeUuid, rootPath
   }
 });
 
-ipcMain.handle('indexer:getDirectoryContentsRecursive', async (_evt, volumeUuid, rootPath, dirRelativePath, limit, offset) => {
+ipcMain.handle('indexer:getDirectoryContentsRecursive', async (_evt, volumeUuid, rootPath, dirRelativePath, limit, offset, deviceId) => {
   try {
-    const deviceId = encodeURIComponent(getRemoteDeviceId());
-    const remote = await remoteRequest(`/api/dir/contents_recursive?volumeUuid=${encodeURIComponent(volumeUuid)}&rootPath=${encodeURIComponent(rootPath)}&dirRel=${encodeURIComponent(dirRelativePath || '')}&limit=${limit || 250}&offset=${offset || 0}&deviceId=${deviceId}`);
+    const encodedDeviceId = encodeURIComponent(deviceId || getRemoteDeviceId());
+    const remote = await remoteRequest(`/api/dir/contents_recursive?volumeUuid=${encodeURIComponent(volumeUuid)}&rootPath=${encodeURIComponent(rootPath)}&dirRel=${encodeURIComponent(dirRelativePath || '')}&limit=${limit || 250}&offset=${offset || 0}&deviceId=${encodedDeviceId}`);
     if (remote?.ok) return { ok: true, files: remote.files || [] };
     return { ok: false, error: remote?.error || 'remote_unavailable' };
   } catch (e) {
@@ -600,10 +747,10 @@ ipcMain.handle('indexer:getDirectoryContentsRecursive', async (_evt, volumeUuid,
   }
 });
 
-ipcMain.handle('indexer:getDirectoryStats', async (_evt, volumeUuid, rootPath, dirRelativePath) => {
+ipcMain.handle('indexer:getDirectoryStats', async (_evt, volumeUuid, rootPath, dirRelativePath, deviceId) => {
   try {
-    const deviceId = encodeURIComponent(getRemoteDeviceId());
-    const remote = await remoteRequest(`/api/dir/stats?volumeUuid=${encodeURIComponent(volumeUuid)}&rootPath=${encodeURIComponent(rootPath)}&dirRel=${encodeURIComponent(dirRelativePath || '')}&deviceId=${deviceId}`);
+    const encodedDeviceId = encodeURIComponent(deviceId || getRemoteDeviceId());
+    const remote = await remoteRequest(`/api/dir/stats?volumeUuid=${encodeURIComponent(volumeUuid)}&rootPath=${encodeURIComponent(rootPath)}&dirRel=${encodeURIComponent(dirRelativePath || '')}&deviceId=${encodedDeviceId}`);
     if (remote?.ok) return { ok: true, stats: remote.stats || {} };
     return { ok: false, error: remote?.error || 'remote_unavailable' };
   } catch (e) {

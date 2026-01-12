@@ -121,7 +121,8 @@ export default function AssetDetailPage() {
       const res = await window.electronAPI.getDirectoryContents(
         item.volume_uuid,
         item.root_path,
-        item.relative_path
+        item.relative_path,
+        item.device_id
       );
       if (res?.ok) {
         const files = (res.files || []).map((f) => ({
