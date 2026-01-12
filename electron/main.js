@@ -68,12 +68,74 @@ function getRemoteDeviceId() {
   return getSetting('machine_id') || 'local';
 }
 
+const VOLUME_FIELDS = [
+  'volume_uuid',
+  'volume_name',
+  'mount_point_last',
+  'size_bytes',
+  'fs_type',
+  'first_seen_at',
+  'last_seen_at',
+  'last_scan_at',
+  'scan_interval_ms',
+  'is_active',
+  'auto_purge',
+  'auto_added',
+  'tags',
+  'physical_location',
+  'notes',
+  'signature',
+  'signature_hint',
+  'thumb1_path',
+  'thumb2_path',
+  'thumb3_path'
+];
+
+const MANUAL_ROOT_FIELDS = [
+  'root_path',
+  'path',
+  'root_id',
+  'label',
+  'last_scan_at',
+  'scan_interval_ms',
+  'is_active',
+  'notes'
+];
+
+function pickFields(source, fields) {
+  const out = {};
+  if (!source) return out;
+  for (const key of fields) {
+    if (Object.prototype.hasOwnProperty.call(source, key)) {
+      out[key] = source[key];
+    }
+  }
+  return out;
+}
+
+function findVolumeInState(state, volumeUuid, deviceId) {
+  const volumes = state?.volumes || [];
+  if (deviceId) {
+    return volumes.find((v) => v.volume_uuid === volumeUuid && v.device_id === deviceId) || null;
+  }
+  return volumes.find((v) => v.volume_uuid === volumeUuid) || null;
+}
+
+function findManualRootInState(state, rootId, deviceId) {
+  const roots = state?.manualRoots || [];
+  const match = (r) => `${r.root_id ?? r.id ?? ''}` === `${rootId ?? ''}`;
+  if (deviceId) {
+    return roots.find((r) => match(r) && r.device_id === deviceId) || null;
+  }
+  return roots.find((r) => match(r)) || null;
+}
+
 async function remoteFetchState() {
   console.log('[remote] fetch state', { scope: 'all' });
   return remoteRequest('/api/state');
 }
 
-async function remoteUpsertState({ volumes = [], manualRoots = [], files = [] } = {}) {
+async function remoteUpsertState({ volumes = [], manualRoots = [], files = [], deviceId } = {}) {
   console.log('[remote] upsert state', {
     volumes: volumes.length,
     manualRoots: manualRoots.length,
@@ -82,7 +144,7 @@ async function remoteUpsertState({ volumes = [], manualRoots = [], files = [] } 
   return remoteRequest('/api/state/upsert', {
     method: 'POST',
     body: {
-      deviceId: getRemoteDeviceId(),
+      deviceId: deviceId || getRemoteDeviceId(),
       volumes,
       manualRoots,
       files
@@ -90,23 +152,23 @@ async function remoteUpsertState({ volumes = [], manualRoots = [], files = [] } 
   });
 }
 
-async function remoteDeleteVolume(volumeUuid) {
+async function remoteDeleteVolume(volumeUuid, deviceId) {
   return remoteRequest('/api/volume/delete', {
     method: 'POST',
     body: {
       volumeUuid,
-      deviceId: getRemoteDeviceId(),
+      deviceId: deviceId || getRemoteDeviceId(),
       deleteFiles: true
     }
   });
 }
 
-async function remoteDeleteManualRoot(rootId) {
+async function remoteDeleteManualRoot(rootId, deviceId) {
   return remoteRequest('/api/manual-root/delete', {
     method: 'POST',
     body: {
       rootId,
-      deviceId: getRemoteDeviceId(),
+      deviceId: deviceId || getRemoteDeviceId(),
       deleteFiles: true
     }
   });
@@ -758,10 +820,21 @@ ipcMain.handle('indexer:getDirectoryStats', async (_evt, volumeUuid, rootPath, d
   }
 });
 
-ipcMain.handle('indexer:setVolumeActive', async (_evt, volumeUuid, isActive) => {
+ipcMain.handle('indexer:setVolumeActive', async (_evt, volumeUuid, isActive, deviceId) => {
   try {
+    const stateRes = await remoteFetchState();
+    if (!stateRes?.ok) return { ok: false, error: stateRes?.error || 'remote_unavailable' };
+    const existing = findVolumeInState(stateRes, volumeUuid, deviceId);
+    if (!existing) return { ok: false, error: 'Volume not found.' };
+    const updated = {
+      ...pickFields(existing, VOLUME_FIELDS),
+      volume_uuid: volumeUuid,
+      is_active: isActive ? 1 : 0
+    };
+    const targetDevice = deviceId || existing.device_id || getRemoteDeviceId();
     const remote = await remoteUpsertState({
-      volumes: [{ volume_uuid: volumeUuid, is_active: isActive ? 1 : 0, device_id: getRemoteDeviceId() }]
+      deviceId: targetDevice,
+      volumes: [updated]
     });
     if (!remote?.ok) return { ok: false, error: remote?.error || 'remote_unavailable' };
     return { ok: true };
@@ -770,10 +843,21 @@ ipcMain.handle('indexer:setVolumeActive', async (_evt, volumeUuid, isActive) => 
   }
 });
 
-ipcMain.handle('indexer:setVolumeInterval', async (_evt, volumeUuid, intervalMs) => {
+ipcMain.handle('indexer:setVolumeInterval', async (_evt, volumeUuid, intervalMs, deviceId) => {
   try {
+    const stateRes = await remoteFetchState();
+    if (!stateRes?.ok) return { ok: false, error: stateRes?.error || 'remote_unavailable' };
+    const existing = findVolumeInState(stateRes, volumeUuid, deviceId);
+    if (!existing) return { ok: false, error: 'Volume not found.' };
+    const updated = {
+      ...pickFields(existing, VOLUME_FIELDS),
+      volume_uuid: volumeUuid,
+      scan_interval_ms: intervalMs
+    };
+    const targetDevice = deviceId || existing.device_id || getRemoteDeviceId();
     const remote = await remoteUpsertState({
-      volumes: [{ volume_uuid: volumeUuid, scan_interval_ms: intervalMs, device_id: getRemoteDeviceId() }]
+      deviceId: targetDevice,
+      volumes: [updated]
     });
     if (!remote?.ok) return { ok: false, error: remote?.error || 'remote_unavailable' };
     return { ok: true };
@@ -782,10 +866,21 @@ ipcMain.handle('indexer:setVolumeInterval', async (_evt, volumeUuid, intervalMs)
   }
 });
 
-ipcMain.handle('indexer:setVolumeAutoPurge', async (_evt, volumeUuid, enabled) => {
+ipcMain.handle('indexer:setVolumeAutoPurge', async (_evt, volumeUuid, enabled, deviceId) => {
   try {
+    const stateRes = await remoteFetchState();
+    if (!stateRes?.ok) return { ok: false, error: stateRes?.error || 'remote_unavailable' };
+    const existing = findVolumeInState(stateRes, volumeUuid, deviceId);
+    if (!existing) return { ok: false, error: 'Volume not found.' };
+    const updated = {
+      ...pickFields(existing, VOLUME_FIELDS),
+      volume_uuid: volumeUuid,
+      auto_purge: enabled ? 1 : 0
+    };
+    const targetDevice = deviceId || existing.device_id || getRemoteDeviceId();
     const remote = await remoteUpsertState({
-      volumes: [{ volume_uuid: volumeUuid, auto_purge: enabled ? 1 : 0, device_id: getRemoteDeviceId() }]
+      deviceId: targetDevice,
+      volumes: [updated]
     });
     if (!remote?.ok) return { ok: false, error: remote?.error || 'remote_unavailable' };
     return { ok: true };
@@ -817,10 +912,25 @@ ipcMain.handle('indexer:addManualRoot', async (_evt, rootPath) => {
   }
 });
 
-ipcMain.handle('indexer:setManualRootActive', async (_evt, rootId, isActive) => {
+ipcMain.handle('indexer:setManualRootActive', async (_evt, rootId, isActive, deviceId) => {
   try {
+    const stateRes = await remoteFetchState();
+    if (!stateRes?.ok) return { ok: false, error: stateRes?.error || 'remote_unavailable' };
+    const existing = findManualRootInState(stateRes, rootId, deviceId);
+    if (!existing) return { ok: false, error: 'Manual root not found.' };
+    const rootPath = existing.root_path || existing.path;
+    const updated = {
+      ...pickFields(existing, MANUAL_ROOT_FIELDS),
+      root_path: rootPath,
+      path: existing.path || rootPath,
+      root_id: existing.root_id || rootId,
+      id: existing.root_id || rootId,
+      is_active: isActive ? 1 : 0
+    };
+    const targetDevice = deviceId || existing.device_id || getRemoteDeviceId();
     const remote = await remoteUpsertState({
-      manualRoots: [{ id: rootId, is_active: isActive ? 1 : 0, device_id: getRemoteDeviceId() }]
+      deviceId: targetDevice,
+      manualRoots: [updated]
     });
     if (!remote?.ok) return { ok: false, error: remote?.error || 'remote_unavailable' };
     return { ok: true };
@@ -829,10 +939,25 @@ ipcMain.handle('indexer:setManualRootActive', async (_evt, rootId, isActive) => 
   }
 });
 
-ipcMain.handle('indexer:setManualRootInterval', async (_evt, rootId, intervalMs) => {
+ipcMain.handle('indexer:setManualRootInterval', async (_evt, rootId, intervalMs, deviceId) => {
   try {
+    const stateRes = await remoteFetchState();
+    if (!stateRes?.ok) return { ok: false, error: stateRes?.error || 'remote_unavailable' };
+    const existing = findManualRootInState(stateRes, rootId, deviceId);
+    if (!existing) return { ok: false, error: 'Manual root not found.' };
+    const rootPath = existing.root_path || existing.path;
+    const updated = {
+      ...pickFields(existing, MANUAL_ROOT_FIELDS),
+      root_path: rootPath,
+      path: existing.path || rootPath,
+      root_id: existing.root_id || rootId,
+      id: existing.root_id || rootId,
+      scan_interval_ms: intervalMs
+    };
+    const targetDevice = deviceId || existing.device_id || getRemoteDeviceId();
     const remote = await remoteUpsertState({
-      manualRoots: [{ id: rootId, scan_interval_ms: intervalMs, device_id: getRemoteDeviceId() }]
+      deviceId: targetDevice,
+      manualRoots: [updated]
     });
     if (!remote?.ok) return { ok: false, error: remote?.error || 'remote_unavailable' };
     return { ok: true };
@@ -841,10 +966,25 @@ ipcMain.handle('indexer:setManualRootInterval', async (_evt, rootId, intervalMs)
   }
 });
 
-ipcMain.handle('indexer:setManualRootAutoPurge', async (_evt, rootId, enabled) => {
+ipcMain.handle('indexer:setManualRootAutoPurge', async (_evt, rootId, enabled, deviceId) => {
   try {
+    const stateRes = await remoteFetchState();
+    if (!stateRes?.ok) return { ok: false, error: stateRes?.error || 'remote_unavailable' };
+    const existing = findManualRootInState(stateRes, rootId, deviceId);
+    if (!existing) return { ok: false, error: 'Manual root not found.' };
+    const rootPath = existing.root_path || existing.path;
+    const updated = {
+      ...pickFields(existing, MANUAL_ROOT_FIELDS),
+      root_path: rootPath,
+      path: existing.path || rootPath,
+      root_id: existing.root_id || rootId,
+      id: existing.root_id || rootId,
+      auto_purge: enabled ? 1 : 0
+    };
+    const targetDevice = deviceId || existing.device_id || getRemoteDeviceId();
     const remote = await remoteUpsertState({
-      manualRoots: [{ id: rootId, auto_purge: enabled ? 1 : 0, device_id: getRemoteDeviceId() }]
+      deviceId: targetDevice,
+      manualRoots: [updated]
     });
     if (!remote?.ok) return { ok: false, error: remote?.error || 'remote_unavailable' };
     return { ok: true };
@@ -853,10 +993,25 @@ ipcMain.handle('indexer:setManualRootAutoPurge', async (_evt, rootId, enabled) =
   }
 });
 
-ipcMain.handle('indexer:removeManualRoot', async (_evt, rootId) => {
+ipcMain.handle('indexer:removeManualRoot', async (_evt, rootId, deviceId) => {
   try {
+    const stateRes = await remoteFetchState();
+    if (!stateRes?.ok) return { ok: false, error: stateRes?.error || 'remote_unavailable' };
+    const existing = findManualRootInState(stateRes, rootId, deviceId);
+    if (!existing) return { ok: false, error: 'Manual root not found.' };
+    const rootPath = existing.root_path || existing.path;
+    const updated = {
+      ...pickFields(existing, MANUAL_ROOT_FIELDS),
+      root_path: rootPath,
+      path: existing.path || rootPath,
+      root_id: existing.root_id || rootId,
+      id: existing.root_id || rootId,
+      is_active: 0
+    };
+    const targetDevice = deviceId || existing.device_id || getRemoteDeviceId();
     const remote = await remoteUpsertState({
-      manualRoots: [{ id: rootId, is_active: 0, device_id: getRemoteDeviceId() }]
+      deviceId: targetDevice,
+      manualRoots: [updated]
     });
     if (!remote?.ok) return { ok: false, error: remote?.error || 'remote_unavailable' };
     return { ok: true };
@@ -865,10 +1020,11 @@ ipcMain.handle('indexer:removeManualRoot', async (_evt, rootId) => {
   }
 });
 
-ipcMain.handle('indexer:disableVolume', async (_evt, volumeUuid) => {
+ipcMain.handle('indexer:disableVolume', async (_evt, volumeUuid, deviceId) => {
   try {
     const remote = await remoteUpsertState({
-      volumes: [{ volume_uuid: volumeUuid, is_active: 0, device_id: getRemoteDeviceId() }]
+      deviceId: deviceId || getRemoteDeviceId(),
+      volumes: [{ volume_uuid: volumeUuid, is_active: 0, device_id: deviceId || getRemoteDeviceId() }]
     });
     if (!remote?.ok) return { ok: false, error: remote?.error || 'remote_unavailable' };
     return { ok: true };
@@ -877,9 +1033,9 @@ ipcMain.handle('indexer:disableVolume', async (_evt, volumeUuid) => {
   }
 });
 
-ipcMain.handle('indexer:disableAndDeleteVolumeData', async (_evt, volumeUuid) => {
+ipcMain.handle('indexer:disableAndDeleteVolumeData', async (_evt, volumeUuid, deviceId) => {
   try {
-    const remote = await remoteDeleteVolume(volumeUuid);
+    const remote = await remoteDeleteVolume(volumeUuid, deviceId);
     if (!remote?.ok) return { ok: false, error: remote?.error || 'remote_unavailable' };
     return { ok: true };
   } catch (e) {
@@ -887,10 +1043,25 @@ ipcMain.handle('indexer:disableAndDeleteVolumeData', async (_evt, volumeUuid) =>
   }
 });
 
-ipcMain.handle('indexer:disableManualRoot', async (_evt, rootId) => {
+ipcMain.handle('indexer:disableManualRoot', async (_evt, rootId, deviceId) => {
   try {
+    const stateRes = await remoteFetchState();
+    if (!stateRes?.ok) return { ok: false, error: stateRes?.error || 'remote_unavailable' };
+    const existing = findManualRootInState(stateRes, rootId, deviceId);
+    if (!existing) return { ok: false, error: 'Manual root not found.' };
+    const rootPath = existing.root_path || existing.path;
+    const updated = {
+      ...pickFields(existing, MANUAL_ROOT_FIELDS),
+      root_path: rootPath,
+      path: existing.path || rootPath,
+      root_id: existing.root_id || rootId,
+      id: existing.root_id || rootId,
+      is_active: 0
+    };
+    const targetDevice = deviceId || existing.device_id || getRemoteDeviceId();
     const remote = await remoteUpsertState({
-      manualRoots: [{ id: rootId, is_active: 0, device_id: getRemoteDeviceId() }]
+      deviceId: targetDevice,
+      manualRoots: [updated]
     });
     if (!remote?.ok) return { ok: false, error: remote?.error || 'remote_unavailable' };
     return { ok: true };
@@ -899,9 +1070,9 @@ ipcMain.handle('indexer:disableManualRoot', async (_evt, rootId) => {
   }
 });
 
-ipcMain.handle('indexer:disableAndDeleteManualRootData', async (_evt, rootId) => {
+ipcMain.handle('indexer:disableAndDeleteManualRootData', async (_evt, rootId, deviceId) => {
   try {
-    const remote = await remoteDeleteManualRoot(rootId);
+    const remote = await remoteDeleteManualRoot(rootId, deviceId);
     if (!remote?.ok) return { ok: false, error: remote?.error || 'remote_unavailable' };
     return { ok: true };
   } catch (e) {

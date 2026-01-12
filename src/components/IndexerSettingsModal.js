@@ -111,29 +111,25 @@ export default function IndexerSettingsModal({ open, onClose, onStateChanged }) 
   }, [open, loadIndexerState]);
 
   // --- Drives actions ---
-  const setVolumeActive = useCallback(async (volumeUuid, isActive) => {
+  const setVolumeActive = useCallback(async (volumeUuid, isActive, deviceId) => {
     setError(null);
     const res = await safeCall(() =>
-      window.electronAPI.indexerSetVolumeActive?.(volumeUuid, isActive)
+      window.electronAPI.indexerSetVolumeActive?.(volumeUuid, isActive, deviceId)
     );
     if (!res) return;
     if (!res.ok) return setError(res.error || 'Failed to update drive.');
-    const st = res.state || state;
-    setState(st);
-    onStateChanged && onStateChanged(st);
-  }, [safeCall, state, onStateChanged]);
+    await loadIndexerState();
+  }, [safeCall, loadIndexerState]);
 
-  const setVolumeInterval = useCallback(async (volumeUuid, intervalMs) => {
+  const setVolumeInterval = useCallback(async (volumeUuid, intervalMs, deviceId) => {
     setError(null);
     const res = await safeCall(() =>
-      window.electronAPI.indexerSetVolumeInterval?.(volumeUuid, intervalMs)
+      window.electronAPI.indexerSetVolumeInterval?.(volumeUuid, intervalMs, deviceId)
     );
     if (!res) return;
     if (!res.ok) return setError(res.error || 'Failed to update interval.');
-    const st = res.state || state;
-    setState(st);
-    onStateChanged && onStateChanged(st);
-  }, [safeCall, state, onStateChanged]);
+    await loadIndexerState();
+  }, [safeCall, loadIndexerState]);
 
   // --- Manual roots actions ---
   const addManualRoot = useCallback(async () => {
@@ -157,55 +153,56 @@ export default function IndexerSettingsModal({ open, onClose, onStateChanged }) 
     }
   }, [begin, end, state, onStateChanged]);
 
-  const setManualRootActive = useCallback(async (rootId, isActive) => {
+  const setManualRootActive = useCallback(async (rootId, isActive, deviceId) => {
     setError(null);
     const res = await safeCall(() =>
-      window.electronAPI.indexerSetManualRootActive?.(rootId, isActive)
+      window.electronAPI.indexerSetManualRootActive?.(rootId, isActive, deviceId)
     );
     if (!res) return;
     if (!res.ok) return setError(res.error || 'Failed to update manual root.');
-    const st = res.state || state;
-    setState(st);
-    onStateChanged && onStateChanged(st);
-  }, [safeCall, state, onStateChanged]);
+    await loadIndexerState();
+  }, [safeCall, loadIndexerState]);
 
-  const setManualRootInterval = useCallback(async (rootId, intervalMs) => {
+  const setManualRootInterval = useCallback(async (rootId, intervalMs, deviceId) => {
     setError(null);
     const res = await safeCall(() =>
-      window.electronAPI.indexerSetManualRootInterval?.(rootId, intervalMs)
+      window.electronAPI.indexerSetManualRootInterval?.(rootId, intervalMs, deviceId)
     );
     if (!res) return;
     if (!res.ok) return setError(res.error || 'Failed to update manual root interval.');
-    const st = res.state || state;
-    setState(st);
-    onStateChanged && onStateChanged(st);
-  }, [safeCall, state, onStateChanged]);
+    await loadIndexerState();
+  }, [safeCall, loadIndexerState]);
 
-  const removeManualRoot = useCallback(async (rootId) => {
+  const removeManualRoot = useCallback(async (rootId, deviceId) => {
     setError(null);
     const res = await safeCall(() =>
-      window.electronAPI.indexerRemoveManualRoot?.(rootId)
+      window.electronAPI.indexerRemoveManualRoot?.(rootId, deviceId)
     );
     if (!res) return;
     if (!res.ok) return setError(res.error || 'Failed to remove manual root.');
-    const st = res.state || state;
-    setState(st);
-    onStateChanged && onStateChanged(st);
-  }, [safeCall, state, onStateChanged]);
+    await loadIndexerState();
+  }, [safeCall, loadIndexerState]);
 
   // --- Derived rows ---
   const driveRows = useMemo(() => {
-    return (state.drives || []).map((d, idx) => ({
-      id: d.volume_uuid || d.id || idx,
-      ...d
-    }));
+    return (state.drives || []).map((d, idx) => {
+      const baseId = d.volume_uuid || d.id || idx;
+      return {
+        ...d,
+        id: `${d.device_id || 'unknown'}::${baseId}`
+      };
+    });
   }, [state.drives]);
 
   const rootRows = useMemo(() => {
-    return (state.roots || []).map((r, idx) => ({
-      id: r.id || r.path || idx,
-      ...r
-    }));
+    return (state.roots || []).map((r, idx) => {
+      const baseId = r.root_id || r.id || r.path || idx;
+      return {
+        ...r,
+        id: `${r.device_id || 'unknown'}::${baseId}`,
+        __rootId: baseId
+      };
+    });
   }, [state.roots]);
 
   // --- Columns ---
@@ -219,7 +216,7 @@ export default function IndexerSettingsModal({ open, onClose, onStateChanged }) 
         <Switch
           checked={!!params.row.is_active}
           size="small"
-          onChange={(e) => setVolumeActive(params.row.volume_uuid, e.target.checked)}
+          onChange={(e) => setVolumeActive(params.row.volume_uuid, e.target.checked, params.row.device_id)}
         />
       )
     },
@@ -267,7 +264,7 @@ export default function IndexerSettingsModal({ open, onClose, onStateChanged }) 
             const current = params.row.scan_interval_ms ?? DEFAULT_INTERVAL;
             const idx = Math.max(0, INTERVAL_OPTIONS.findIndex((o) => o.value === current));
             const next = INTERVAL_OPTIONS[(idx + 1) % INTERVAL_OPTIONS.length].value;
-            await setVolumeInterval(params.row.volume_uuid, next);
+            await setVolumeInterval(params.row.volume_uuid, next, params.row.device_id);
           }}
         >
           {intervalLabel(params.row.scan_interval_ms ?? DEFAULT_INTERVAL)}
@@ -323,7 +320,7 @@ export default function IndexerSettingsModal({ open, onClose, onStateChanged }) 
         <Switch
           checked={!!params.row.is_active}
           size="small"
-          onChange={(e) => setManualRootActive(params.row.id, e.target.checked)}
+          onChange={(e) => setManualRootActive(params.row.__rootId || params.row.root_id || params.row.id, e.target.checked, params.row.device_id)}
         />
       )
     },
@@ -342,7 +339,7 @@ export default function IndexerSettingsModal({ open, onClose, onStateChanged }) 
             const current = params.row.scan_interval_ms ?? DEFAULT_INTERVAL;
             const idx = Math.max(0, INTERVAL_OPTIONS.findIndex((o) => o.value === current));
             const next = INTERVAL_OPTIONS[(idx + 1) % INTERVAL_OPTIONS.length].value;
-            await setManualRootInterval(params.row.id, next);
+            await setManualRootInterval(params.row.__rootId || params.row.root_id || params.row.id, next, params.row.device_id);
           }}
         >
           {intervalLabel(params.row.scan_interval_ms ?? DEFAULT_INTERVAL)}
@@ -381,7 +378,7 @@ export default function IndexerSettingsModal({ open, onClose, onStateChanged }) 
                 size="small"
                 onClick={async (e) => {
                   e.stopPropagation();
-                  await removeManualRoot(params.row.id);
+                  await removeManualRoot(params.row.__rootId || params.row.root_id || params.row.id, params.row.device_id);
                 }}
               >
                 <DeleteIcon fontSize="small" />

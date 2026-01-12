@@ -140,17 +140,20 @@ export default function IndexerPage() {
       } else {
         const nextState = res.state || { drives: [], roots: [] };
         const roots = Array.isArray(nextState.roots) ? nextState.roots : [];
-        if (window.electronAPI?.normalizeManualRootId && localMachineId) {
-          const updatedRoots = await Promise.all(roots.map(async (r) => {
-            const rawId = r?.id;
-            const isNumeric = typeof rawId === 'number' || (typeof rawId === 'string' && /^\d+$/.test(rawId));
-            if (isNumeric) return { ...r, __rootId: String(rawId) };
-            if (r?.device_id && r.device_id !== localMachineId) return { ...r, __rootId: rawId };
+        const updatedRoots = await Promise.all(roots.map(async (r) => {
+          const rawId = r?.root_id ?? r?.id ?? null;
+          const isNumeric = typeof rawId === 'number' || (typeof rawId === 'string' && /^\d+$/.test(rawId));
+          if (isNumeric) return { ...r, __rootId: String(rawId) };
+          if (r?.device_id && localMachineId && r.device_id !== localMachineId) {
+            return { ...r, __rootId: rawId };
+          }
+          if (window.electronAPI?.normalizeManualRootId && r?.path) {
             const normalized = await window.electronAPI.normalizeManualRootId(r.path);
             return { ...r, __rootId: normalized?.id || rawId };
-          }));
-          nextState.roots = updatedRoots;
-        }
+          }
+          return { ...r, __rootId: rawId };
+        }));
+        nextState.roots = updatedRoots;
         setState(nextState);
         setError(null);
         setApiStatus({ label: 'API Connected', color: 'success' });
@@ -191,13 +194,13 @@ export default function IndexerPage() {
     try {
       setLoading(true);
       if (confirmTarget.type === 'volume') {
-        const res = await window.electronAPI.indexerDisableVolume?.(confirmTarget.id);
+        const res = await window.electronAPI.indexerDisableVolume?.(confirmTarget.id, confirmTarget.deviceId);
         if (res && res.ok === false) {
           setError(res.error || 'Failed to disable volume.');
           return;
         }
       } else {
-        const res = await window.electronAPI.indexerDisableManualRoot?.(confirmTarget.id);
+        const res = await window.electronAPI.indexerDisableManualRoot?.(confirmTarget.id, confirmTarget.deviceId);
         if (res && res.ok === false) {
           setError(res.error || 'Failed to disable manual root.');
           return;
@@ -215,13 +218,13 @@ export default function IndexerPage() {
     try {
       setLoading(true);
       if (confirmTarget.type === 'volume') {
-        const res = await window.electronAPI.indexerDisableAndDeleteVolumeData?.(confirmTarget.id);
+        const res = await window.electronAPI.indexerDisableAndDeleteVolumeData?.(confirmTarget.id, confirmTarget.deviceId);
         if (res && res.ok === false) {
           setError(res.error || 'Failed to disable volume data.');
           return;
         }
       } else {
-        const res = await window.electronAPI.indexerDisableAndDeleteManualRootData?.(confirmTarget.id);
+        const res = await window.electronAPI.indexerDisableAndDeleteManualRootData?.(confirmTarget.id, confirmTarget.deviceId);
         if (res && res.ok === false) {
           setError(res.error || 'Failed to disable manual root data.');
           return;
@@ -341,7 +344,7 @@ export default function IndexerPage() {
     const run = async () => {
       if (!window.electronAPI?.pathExists) return;
       const entries = await Promise.all((state.roots || []).map(async (r) => {
-        const key = r.__rootId || r.id;
+        const key = r.__rootId || r.root_id || r.id;
         if (!r.path) return [key, false];
         if (localMachineId && r.device_id && r.device_id === localMachineId) {
           return [key, true];
@@ -388,7 +391,10 @@ export default function IndexerPage() {
 
   const driveRows = (state.drives || [])
     .filter((d) => machineFilter.length === 0 || machineFilter.includes(d.device_id))
-    .map((d, idx) => ({ id: d.volume_uuid || idx, ...d }));
+    .map((d, idx) => {
+      const baseId = d.volume_uuid || d.id || idx;
+      return { ...d, id: `${d.device_id || 'unknown'}::${baseId}` };
+    });
 
   const intervalOptions = [
     { value: -1, label: 'Manual only' },
@@ -491,7 +497,8 @@ export default function IndexerPage() {
                   openConfirm({
                     type: 'volume',
                     id: params.row.volume_uuid,
-                    name: params.row.volume_name || params.row.volume_uuid
+                    name: params.row.volume_name || params.row.volume_uuid,
+                    deviceId: params.row.device_id
                   });
                 }
               }
@@ -520,7 +527,7 @@ export default function IndexerPage() {
           checked={!!p.row.is_active}
           onChange={async (e) => {
             const next = e.target.checked;
-            await window.electronAPI.indexerSetVolumeActive(p.row.volume_uuid, next);
+            await window.electronAPI.indexerSetVolumeActive(p.row.volume_uuid, next, p.row.device_id);
             await load();
           }}
         />
@@ -533,10 +540,10 @@ export default function IndexerPage() {
       renderCell: (p) => (
         <Switch
           size="small"
-          checked={p.row.auto_purge !== 0}
+          checked={!!p.row.auto_purge}
           onChange={async (e) => {
             const next = e.target.checked;
-            await window.electronAPI.indexerSetVolumeAutoPurge?.(p.row.volume_uuid, next);
+            await window.electronAPI.indexerSetVolumeAutoPurge?.(p.row.volume_uuid, next, p.row.device_id);
             await load();
           }}
         />
@@ -551,7 +558,7 @@ export default function IndexerPage() {
           <Select
             value={p.row.scan_interval_ms ?? 20 * 60 * 1000}
             onChange={async (e) => {
-              await window.electronAPI.indexerSetVolumeInterval(p.row.volume_uuid, e.target.value);
+              await window.electronAPI.indexerSetVolumeInterval(p.row.volume_uuid, e.target.value, p.row.device_id);
               await load();
             }}
           >
@@ -686,7 +693,7 @@ export default function IndexerPage() {
           <DataGridPro
             rows={(state.roots || [])
               .filter((r) => machineFilter.length === 0 || machineFilter.includes(r.device_id))
-              .map((r, idx) => ({ id: r.__rootId || r.id || r.path || idx, ...r }))}
+              .map((r, idx) => ({ ...r, id: r.__rootId || r.id || r.path || idx }))}
             columns={[
               {
                 field: 'actions',
@@ -700,11 +707,13 @@ export default function IndexerPage() {
                           key: 'scan',
                           label: 'Scan now',
                           icon: <PlayArrowIcon fontSize="small" />,
-                          disabled: !window.electronAPI?.scanManualRootNow || !params.row.__rootId || !rootsAccessMap[params.row.__rootId],
+                          disabled: !window.electronAPI?.scanManualRootNow || !(params.row.__rootId || params.row.root_id || params.row.id) || !rootsAccessMap[params.row.__rootId || params.row.root_id || params.row.id],
                           onClick: async () => {
                             try {
                               setLoading(true);
-                              const res = await window.electronAPI.scanManualRootNow?.(params.row.__rootId);
+                              const rootId = params.row.__rootId || params.row.root_id || params.row.id;
+                              if (!rootId) return;
+                              const res = await window.electronAPI.scanManualRootNow?.(rootId);
                               if (!res?.ok) setError(res?.error || 'Failed to scan folder.');
                               else setError(null);
                               await load();
@@ -717,11 +726,13 @@ export default function IndexerPage() {
                           key: 'thumbs',
                           label: 'Generate thumbnails',
                           icon: <PhotoLibraryOutlinedIcon fontSize="small" />,
-                          disabled: !window.electronAPI?.scanManualRootWithThumbs || !params.row.__rootId || !rootsAccessMap[params.row.__rootId],
+                          disabled: !window.electronAPI?.scanManualRootWithThumbs || !(params.row.__rootId || params.row.root_id || params.row.id) || !rootsAccessMap[params.row.__rootId || params.row.root_id || params.row.id],
                           onClick: async () => {
                             try {
                               setLoading(true);
-                              const res = await window.electronAPI.scanManualRootWithThumbs(params.row.__rootId);
+                              const rootId = params.row.__rootId || params.row.root_id || params.row.id;
+                              if (!rootId) return;
+                              const res = await window.electronAPI.scanManualRootWithThumbs(rootId);
                               if (!res?.ok) setError(res?.error || 'Failed to start thumbnail scan.');
                               else setError(null);
                               await load();
@@ -739,7 +750,7 @@ export default function IndexerPage() {
                             navigate('/detail', {
                               state: {
                               item: {
-                                volume_uuid: `manual:${params.row.__rootId || params.row.id}`,
+                                volume_uuid: `manual:${params.row.__rootId || params.row.root_id || params.row.id}`,
                                 root_path: params.row.path,
                                 relative_path: '',
                                 name: params.row.label || params.row.path,
@@ -759,8 +770,9 @@ export default function IndexerPage() {
                           onClick: () => {
                             openConfirm({
                               type: 'root',
-                              id: params.row.__rootId || params.row.id,
-                              name: params.row.label || params.row.path
+                              id: params.row.__rootId || params.row.root_id || params.row.id,
+                              name: params.row.label || params.row.path,
+                              deviceId: params.row.device_id
                             });
                           }
                         }
@@ -789,7 +801,9 @@ export default function IndexerPage() {
                     checked={!!p.row.is_active}
                     onChange={async (e) => {
                       const next = e.target.checked;
-                      await window.electronAPI.indexerSetManualRootActive?.(p.row.id, next);
+                      const rootId = p.row.__rootId || p.row.root_id || p.row.id;
+                      if (!rootId) return;
+                      await window.electronAPI.indexerSetManualRootActive?.(rootId, next, p.row.device_id);
                       await load();
                     }}
                   />
@@ -799,17 +813,24 @@ export default function IndexerPage() {
                 field: 'auto_purge',
                 headerName: 'Auto Purge',
                 width: 110,
-                renderCell: (p) => (
-                  <Switch
-                    size="small"
-                    checked={p.row.auto_purge !== 0}
-                    onChange={async (e) => {
-                      const next = e.target.checked;
-                      await window.electronAPI.indexerSetManualRootAutoPurge?.(p.row.id, next);
-                      await load();
-                    }}
-                  />
-                )
+                renderCell: (p) => {
+                  if (p.row.auto_purge == null) {
+                    return <Typography variant="body2" color="text.secondary">—</Typography>;
+                  }
+                  return (
+                    <Switch
+                      size="small"
+                      checked={!!p.row.auto_purge}
+                      onChange={async (e) => {
+                        const next = e.target.checked;
+                        const rootId = p.row.__rootId || p.row.root_id || p.row.id;
+                        if (!rootId) return;
+                        await window.electronAPI.indexerSetManualRootAutoPurge?.(rootId, next, p.row.device_id);
+                        await load();
+                      }}
+                    />
+                  );
+                }
               },
               {
                 field: 'scan_interval_ms',
@@ -820,7 +841,9 @@ export default function IndexerPage() {
                     <Select
                       value={p.row.scan_interval_ms ?? 20 * 60 * 1000}
                       onChange={async (e) => {
-                        await window.electronAPI.indexerSetManualRootInterval?.(p.row.id, e.target.value);
+                        const rootId = p.row.__rootId || p.row.root_id || p.row.id;
+                        if (!rootId) return;
+                        await window.electronAPI.indexerSetManualRootInterval?.(rootId, e.target.value, p.row.device_id);
                         await load();
                       }}
                     >

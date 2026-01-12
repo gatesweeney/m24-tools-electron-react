@@ -6,6 +6,8 @@ function nowIso() {
   return new Date().toISOString();
 }
 
+const SKIP_EXTENSIONS = new Set(['.dmg']);
+
 function classifyFileType(ext) {
   const e = (ext || '').toLowerCase();
   if (['.mov', '.mp4', '.mxf', '.mts', '.m2ts', '.avi', '.mkv', '.webm'].includes(e)) return 'video';
@@ -60,6 +62,9 @@ async function runA2Files({ db, volume, cancelToken, progress }) {
     { depthLimit: null, dirsOnly: false, yieldEvery: 500, yieldMs: 10 },
     async ({ relPath, name, isDir }) => {
       if (cancelToken.cancelled) return;
+
+      const ext = isDir ? '' : path.extname(name).toLowerCase();
+      if (!isDir && SKIP_EXTENSIONS.has(ext)) return;
 
       upsertFileOrDir(db, volumeUuid, rootPath, relPath, name, isDir);
 

@@ -101,42 +101,42 @@ onYtLog: (callback) => {
 // Indexer state + settings
 getIndexerState: async () => ipcRenderer.invoke('indexer:getState'),
 
-indexerSetVolumeActive: async (volumeUuid, isActive) =>
-  ipcRenderer.invoke('indexer:setVolumeActive', volumeUuid, isActive),
+  indexerSetVolumeActive: async (volumeUuid, isActive, deviceId) =>
+    ipcRenderer.invoke('indexer:setVolumeActive', volumeUuid, isActive, deviceId),
 
-indexerSetVolumeInterval: async (volumeUuid, intervalMs) =>
-  ipcRenderer.invoke('indexer:setVolumeInterval', volumeUuid, intervalMs),
+  indexerSetVolumeInterval: async (volumeUuid, intervalMs, deviceId) =>
+    ipcRenderer.invoke('indexer:setVolumeInterval', volumeUuid, intervalMs, deviceId),
 
-indexerSetVolumeAutoPurge: async (volumeUuid, enabled) =>
-  ipcRenderer.invoke('indexer:setVolumeAutoPurge', volumeUuid, enabled),
+  indexerSetVolumeAutoPurge: async (volumeUuid, enabled, deviceId) =>
+    ipcRenderer.invoke('indexer:setVolumeAutoPurge', volumeUuid, enabled, deviceId),
 
 indexerAddManualRoot: async (rootPath) =>
   ipcRenderer.invoke('indexer:addManualRoot', rootPath),
 
-indexerSetManualRootActive: async (rootId, isActive) =>
-  ipcRenderer.invoke('indexer:setManualRootActive', rootId, isActive),
+  indexerSetManualRootActive: async (rootId, isActive, deviceId) =>
+  ipcRenderer.invoke('indexer:setManualRootActive', rootId, isActive, deviceId),
 
-indexerSetManualRootInterval: async (rootId, intervalMs) =>
-  ipcRenderer.invoke('indexer:setManualRootInterval', rootId, intervalMs),
+indexerSetManualRootInterval: async (rootId, intervalMs, deviceId) =>
+  ipcRenderer.invoke('indexer:setManualRootInterval', rootId, intervalMs, deviceId),
 
-indexerSetManualRootAutoPurge: async (rootId, enabled) =>
-  ipcRenderer.invoke('indexer:setManualRootAutoPurge', rootId, enabled),
+indexerSetManualRootAutoPurge: async (rootId, enabled, deviceId) =>
+  ipcRenderer.invoke('indexer:setManualRootAutoPurge', rootId, enabled, deviceId),
 
-indexerRemoveManualRoot: async (rootId) =>
-  ipcRenderer.invoke('indexer:removeManualRoot', rootId),
+indexerRemoveManualRoot: async (rootId, deviceId) =>
+  ipcRenderer.invoke('indexer:removeManualRoot', rootId, deviceId),
 
   // X-button actions for Indexer page
-  indexerDisableVolume: async (volumeUuid) =>
-    ipcRenderer.invoke('indexer:disableVolume', volumeUuid),
+  indexerDisableVolume: async (volumeUuid, deviceId) =>
+    ipcRenderer.invoke('indexer:disableVolume', volumeUuid, deviceId),
 
-  indexerDisableAndDeleteVolumeData: async (volumeUuid) =>
-    ipcRenderer.invoke('indexer:disableAndDeleteVolumeData', volumeUuid),
+  indexerDisableAndDeleteVolumeData: async (volumeUuid, deviceId) =>
+    ipcRenderer.invoke('indexer:disableAndDeleteVolumeData', volumeUuid, deviceId),
 
-  indexerDisableManualRoot: async (rootId) =>
-    ipcRenderer.invoke('indexer:disableManualRoot', rootId),
+  indexerDisableManualRoot: async (rootId, deviceId) =>
+    ipcRenderer.invoke('indexer:disableManualRoot', rootId, deviceId),
 
-  indexerDisableAndDeleteManualRootData: async (rootId) =>
-    ipcRenderer.invoke('indexer:disableAndDeleteManualRootData', rootId),
+  indexerDisableAndDeleteManualRootData: async (rootId, deviceId) =>
+    ipcRenderer.invoke('indexer:disableAndDeleteManualRootData', rootId, deviceId),
 
 scanIndexerNow: async (target) =>
   ipcRenderer.invoke('indexer:scanNow', target),
