@@ -36,6 +36,11 @@ function getDbPath() {
   return path.join(machineDir, 'index.db');
 }
 
+function getSettingsDbPath() {
+  const { machineDir } = getMachineDir();
+  return path.join(machineDir, 'settings.db');
+}
+
 function getThumbsDir() {
   const base = getBaseDir();
   ensureDir(base);
@@ -56,6 +61,7 @@ module.exports = {
   getBaseDir,
   getMachineDir,
   getDbPath,
+  getSettingsDbPath,
   getThumbsDir,
   getLutsDir
 };

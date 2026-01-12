@@ -16,7 +16,16 @@ import { DataGridPro, GridToolbar } from '@mui/x-data-grid-pro';
 import Tooltip from '@mui/material/Tooltip';
 import IconButton from '@mui/material/IconButton';
 import PlayArrowIcon from '@mui/icons-material/PlayArrow';
-import OpenInNewIcon from '@mui/icons-material/OpenInNew';
+import InfoOutlinedIcon from '@mui/icons-material/InfoOutlined';
+import PhotoLibraryOutlinedIcon from '@mui/icons-material/PhotoLibraryOutlined';
+import EjectOutlinedIcon from '@mui/icons-material/EjectOutlined';
+import Menu from '@mui/material/Menu';
+import ListItemIcon from '@mui/material/ListItemIcon';
+import ListItemText from '@mui/material/ListItemText';
+import MoreVertIcon from '@mui/icons-material/MoreVert';
+import DeleteOutlineIcon from '@mui/icons-material/DeleteOutline';
+import CheckCircleIcon from '@mui/icons-material/CheckCircle';
+import Chip from '@mui/material/Chip';
 import { formatBytes, formatDuration, formatDateTime } from '../utils/formatters';
 import Dialog from '@mui/material/Dialog';
 import DialogTitle from '@mui/material/DialogTitle';
@@ -41,6 +50,44 @@ function ResultChip({ status }) {
   );
 }
 
+function ActionMenu({ items, disabled }) {
+  const [anchorEl, setAnchorEl] = useState(null);
+  const open = Boolean(anchorEl);
+
+  return (
+    <>
+      <IconButton
+        size="small"
+        disabled={disabled}
+        onClick={(e) => setAnchorEl(e.currentTarget)}
+      >
+        <MoreVertIcon fontSize="small" />
+      </IconButton>
+      <Menu
+        anchorEl={anchorEl}
+        open={open}
+        onClose={() => setAnchorEl(null)}
+        anchorOrigin={{ vertical: 'bottom', horizontal: 'left' }}
+        transformOrigin={{ vertical: 'top', horizontal: 'left' }}
+      >
+        {items.map((item) => (
+          <MenuItem
+            key={item.key}
+            onClick={() => {
+              setAnchorEl(null);
+              item.onClick();
+            }}
+            disabled={item.disabled}
+          >
+            <ListItemIcon>{item.icon}</ListItemIcon>
+            <ListItemText>{item.label}</ListItemText>
+          </MenuItem>
+        ))}
+      </Menu>
+    </>
+  );
+}
+
 export default function IndexerPage() {
   const navigate = useNavigate();
   const [fdaDialogOpen, setFdaDialogOpen] = useState(false);
@@ -55,6 +102,11 @@ export default function IndexerPage() {
   const [purgeAgeDays, setPurgeAgeDays] = useState('0');
   const [settingsLoaded, setSettingsLoaded] = useState(false);
   const [machineFilter, setMachineFilter] = useState('All');
+  const [apiTokenDialogOpen, setApiTokenDialogOpen] = useState(false);
+  const [apiTokenValue, setApiTokenValue] = useState('');
+  const [apiTokenChecked, setApiTokenChecked] = useState(false);
+  const [apiStatus, setApiStatus] = useState({ label: 'API Unknown', color: 'default' });
+  const [localMachineId, setLocalMachineId] = useState(null);
 
   const remindLater = async () => {
     const until = new Date(Date.now() + 24*60*60*1000).toISOString();
@@ -79,14 +131,32 @@ export default function IndexerPage() {
     }
     try {
       setLoading(true);
+      setApiStatus({ label: 'API Checking', color: 'warning' });
       const res = await window.electronAPI.getIndexerState();
-      if (!res.ok) setError(res.error || 'Failed to load indexer state');
-      else {
-        setState(res.state || { drives: [], roots: [] });
+      if (!res.ok) {
+        setError(res.error || 'Failed to load indexer state');
+        setApiStatus({ label: 'API Error', color: 'error' });
+      } else {
+        const nextState = res.state || { drives: [], roots: [] };
+        const roots = Array.isArray(nextState.roots) ? nextState.roots : [];
+        if (window.electronAPI?.normalizeManualRootId && localMachineId) {
+          const updatedRoots = await Promise.all(roots.map(async (r) => {
+            const rawId = r?.id;
+            const isNumeric = typeof rawId === 'number' || (typeof rawId === 'string' && /^\d+$/.test(rawId));
+            if (isNumeric) return { ...r, __rootId: String(rawId) };
+            if (r?.device_id && r.device_id !== localMachineId) return { ...r, __rootId: rawId };
+            const normalized = await window.electronAPI.normalizeManualRootId(r.path);
+            return { ...r, __rootId: normalized?.id || rawId };
+          }));
+          nextState.roots = updatedRoots;
+        }
+        setState(nextState);
         setError(null);
+        setApiStatus({ label: 'API Connected', color: 'success' });
       }
     } catch (e) {
       setError(e.message || String(e));
+      setApiStatus({ label: 'API Error', color: 'error' });
     } finally {
       setLoading(false);
     }
@@ -94,12 +164,14 @@ export default function IndexerPage() {
 
   const loadSettings = async () => {
     if (!window.electronAPI?.getIndexerSetting) return;
-    const [cacheRes, purgeRes] = await Promise.all([
+    const [cacheRes, purgeRes, machineRes] = await Promise.all([
       window.electronAPI.getIndexerSetting('thumb_cache_max_gb'),
-      window.electronAPI.getIndexerSetting('volume_purge_age_days')
+      window.electronAPI.getIndexerSetting('volume_purge_age_days'),
+      window.electronAPI.getIndexerSetting('machine_id')
     ]);
     setThumbCacheGb(cacheRes?.value ?? '10');
     setPurgeAgeDays(purgeRes?.value ?? '0');
+    setLocalMachineId(machineRes?.value ?? null);
     setSettingsLoaded(true);
   };
 
@@ -118,9 +190,17 @@ export default function IndexerPage() {
     try {
       setLoading(true);
       if (confirmTarget.type === 'volume') {
-        await window.electronAPI.indexerDisableVolume?.(confirmTarget.id);
+        const res = await window.electronAPI.indexerDisableVolume?.(confirmTarget.id);
+        if (res && res.ok === false) {
+          setError(res.error || 'Failed to disable volume.');
+          return;
+        }
       } else {
-        await window.electronAPI.indexerDisableManualRoot?.(confirmTarget.id);
+        const res = await window.electronAPI.indexerDisableManualRoot?.(confirmTarget.id);
+        if (res && res.ok === false) {
+          setError(res.error || 'Failed to disable manual root.');
+          return;
+        }
       }
       await load();
     } finally {
@@ -134,9 +214,17 @@ export default function IndexerPage() {
     try {
       setLoading(true);
       if (confirmTarget.type === 'volume') {
-        await window.electronAPI.indexerDisableAndDeleteVolumeData?.(confirmTarget.id);
+        const res = await window.electronAPI.indexerDisableAndDeleteVolumeData?.(confirmTarget.id);
+        if (res && res.ok === false) {
+          setError(res.error || 'Failed to disable volume data.');
+          return;
+        }
       } else {
-        await window.electronAPI.indexerDisableAndDeleteManualRootData?.(confirmTarget.id);
+        const res = await window.electronAPI.indexerDisableAndDeleteManualRootData?.(confirmTarget.id);
+        if (res && res.ok === false) {
+          setError(res.error || 'Failed to disable manual root data.');
+          return;
+        }
       }
       await load();
     } finally {
@@ -168,6 +256,29 @@ export default function IndexerPage() {
       }
     })();
   }, []);
+
+  useEffect(() => {
+    if (!settingsLoaded || apiTokenChecked) return;
+    const run = async () => {
+      if (!window.electronAPI?.getIndexerSetting) return;
+      const res = await window.electronAPI.getIndexerSetting('remote_api_token');
+      const token = (res?.value || '').trim();
+      if (!token) {
+        setApiTokenDialogOpen(true);
+      } else {
+        setApiTokenValue(token);
+      }
+      setApiTokenChecked(true);
+    };
+    run();
+  }, [settingsLoaded, apiTokenChecked]);
+
+  const saveApiToken = async () => {
+    const next = apiTokenValue.trim();
+    if (!next || !window.electronAPI?.setIndexerSetting) return;
+    await window.electronAPI.setIndexerSetting('remote_api_token', next);
+    setApiTokenDialogOpen(false);
+  };
 
   useEffect(() => {
     if (!window.electronAPI?.onIndexerProgress) return;
@@ -229,9 +340,13 @@ export default function IndexerPage() {
     const run = async () => {
       if (!window.electronAPI?.pathExists) return;
       const entries = await Promise.all((state.roots || []).map(async (r) => {
-        if (!r.path) return [r.id, false];
+        const key = r.__rootId || r.id;
+        if (!r.path) return [key, false];
+        if (localMachineId && r.device_id && r.device_id === localMachineId) {
+          return [key, true];
+        }
         const res = await window.electronAPI.pathExists(r.path);
-        return [r.id, !!res?.exists];
+        return [key, !!res?.exists];
       }));
       if (!cancelled) {
         const map = {};
@@ -241,7 +356,7 @@ export default function IndexerPage() {
     };
     run();
     return () => { cancelled = true; };
-  }, [state.roots]);
+  }, [state.roots, localMachineId]);
 
   const machineOptions = useMemo(() => {
     const names = new Set();
@@ -269,46 +384,72 @@ export default function IndexerPage() {
 
   const columns = [
     {
-      field: 'actions_scan',
-      headerName: 'Scan',
-      width: 120,
+      field: 'actions',
+      headerName: '',
+      width: 64,
       sortable: false,
       filterable: false,
       renderCell: (params) => (
-        <Stack direction="row" spacing={1}>
-          <Tooltip title="Scan this volume now">
-            <span>
-              <IconButton
-                size="small"
-                disabled={!window.electronAPI?.scanVolumeNow || !params.row.volume_uuid}
-                onClick={async (e) => {
-                  e.stopPropagation();
+        <Stack direction="row" spacing={0.5} alignItems="center">
+          <ActionMenu
+            items={[
+              {
+                key: 'scan',
+                label: 'Scan now',
+                icon: <PlayArrowIcon fontSize="small" />,
+                disabled: !window.electronAPI?.scanVolumeNow || !params.row.volume_uuid || !accessMap[params.row.volume_uuid],
+                onClick: async () => {
                   try {
                     setLoading(true);
                     const res = await window.electronAPI.scanVolumeNow(params.row.volume_uuid);
-                    if (!res?.ok) {
-                      setError(res?.error || 'Failed to scan volume.');
-                    } else {
-                      setError(null);
-                    }
+                    if (!res?.ok) setError(res?.error || 'Failed to scan volume.');
+                    else setError(null);
                     await load();
                   } finally {
                     setLoading(false);
                   }
-                }}
-              >
-                <PlayArrowIcon fontSize="small" />
-              </IconButton>
-            </span>
-          </Tooltip>
-
-          <Tooltip title="Open">
-            <span>
-              <IconButton
-                size="small"
-                disabled={!accessMap[params.row.volume_uuid]}
-                onClick={(e) => {
-                  e.stopPropagation();
+                }
+              },
+              {
+                key: 'thumbs',
+                label: 'Generate thumbnails',
+                icon: <PhotoLibraryOutlinedIcon fontSize="small" />,
+                disabled: !window.electronAPI?.scanVolumeWithThumbs || !params.row.volume_uuid || !accessMap[params.row.volume_uuid],
+                onClick: async () => {
+                  try {
+                    setLoading(true);
+                    const res = await window.electronAPI.scanVolumeWithThumbs(params.row.volume_uuid);
+                    if (!res?.ok) setError(res?.error || 'Failed to start thumbnail scan.');
+                    else setError(null);
+                    await load();
+                  } finally {
+                    setLoading(false);
+                  }
+                }
+              },
+              {
+                key: 'eject',
+                label: 'Eject volume',
+                icon: <EjectOutlinedIcon fontSize="small" />,
+                disabled: !window.electronAPI?.ejectVolume || !accessMap[params.row.volume_uuid],
+                onClick: async () => {
+                  try {
+                    setLoading(true);
+                    const res = await window.electronAPI.ejectVolume(params.row.volume_uuid);
+                    if (!res?.ok) setError(res?.error || 'Failed to eject volume.');
+                    else setError(null);
+                    await load();
+                  } finally {
+                    setLoading(false);
+                  }
+                }
+              },
+              {
+                key: 'details',
+                label: 'Open details',
+                icon: <InfoOutlinedIcon fontSize="small" />,
+                disabled: false,
+                onClick: () => {
                   navigate('/detail', {
                     state: {
                       item: {
@@ -321,12 +462,26 @@ export default function IndexerPage() {
                       }
                     }
                   });
-                }}
-              >
-                <OpenInNewIcon fontSize="small" />
-              </IconButton>
-            </span>
-          </Tooltip>
+                }
+              },
+              {
+                key: 'delete',
+                label: 'Disable / Delete…',
+                icon: <DeleteOutlineIcon fontSize="small" />,
+                disabled: false,
+                onClick: () => {
+                  openConfirm({
+                    type: 'volume',
+                    id: params.row.volume_uuid,
+                    name: params.row.volume_name || params.row.volume_uuid
+                  });
+                }
+              }
+            ]}
+          />
+          {accessMap[params.row.volume_uuid] ? (
+            <CheckCircleIcon sx={{ color: 'success.main', fontSize: 18 }} />
+          ) : null}
         </Stack>
       )
     },
@@ -389,64 +544,9 @@ export default function IndexerPage() {
         </FormControl>
       )
     },
-    {
-      field: 'last_run_status',
-      headerName: 'Last Result',
-      width: 130,
-      renderCell: (p) => <ResultChip status={p.row.last_run_status} />
-    },
-    {
-      field: 'last_run_duration_ms',
-      headerName: 'Duration',
-      width: 110,
-      valueGetter: (p) => formatDuration(p.row.last_run_duration_ms)
-    },
     { field: 'mount_point_last', headerName: 'Mount', flex: 1.2, minWidth: 220 },
     { field: 'volume_uuid', headerName: 'Volume UUID', flex: 1.2, minWidth: 260 },
-    {
-      field: 'seen_count',
-      headerName: 'Seen',
-      width: 80,
-      type: 'number',
-      valueGetter: (p) => p.row.seen_count ?? 1
-    },
-    {
-      field: 'seen_on',
-      headerName: 'Seen On',
-      width: 200,
-      valueGetter: (p) => {
-        const arr = p.row.seen_on;
-        if (!Array.isArray(arr) || arr.length === 0) return '—';
-        const s = arr.join(', ');
-        return s.length > 40 ? s.slice(0, 37) + '…' : s;
-      }
-    },
-    {
-      field: 'actions_delete',
-      headerName: 'Delete',
-      width: 110,
-      sortable: false,
-      filterable: false,
-      renderCell: (params) => (
-        <Tooltip title="Disable / Delete options">
-          <span>
-            <IconButton
-              size="small"
-              onClick={(e) => {
-                e.stopPropagation();
-                openConfirm({
-                  type: 'volume',
-                  id: params.row.volume_uuid,
-                  name: params.row.volume_name || params.row.volume_uuid
-                });
-              }}
-            >
-              <CloseIcon fontSize="small" />
-            </IconButton>
-          </span>
-        </Tooltip>
-      )
-    }
+ 
   ];
 
   return (
@@ -460,6 +560,7 @@ export default function IndexerPage() {
             </Typography>
           </Box>
           <Stack direction="row" spacing={1} alignItems="center">
+            <Chip size="small" label={apiStatus.label} color={apiStatus.color} />
             <FormControl size="small" sx={{ minWidth: 160 }}>
               <Select value={machineFilter} onChange={(e) => setMachineFilter(e.target.value)}>
                 {machineOptions.map((opt) => (
@@ -494,7 +595,19 @@ export default function IndexerPage() {
           </Stack>
         </Stack>
 
-        {loading && <LinearProgress />}
+        {loading && (
+          <Box
+            sx={{
+              position: 'fixed',
+              top: (theme) => `calc(${theme.mixins.toolbar.minHeight || 48}px + ${theme.spacing(2)})`,
+              left: 0,
+              right: 0,
+              zIndex: (theme) => theme.zIndex.snackbar + 1
+            }}
+          >
+            <LinearProgress />
+          </Box>
+        )}
         {error && <Alert severity="error">{error}</Alert>}
 
         <Box sx={{ height: 520, width: '100%', bgcolor: 'background.paper', borderRadius: 2 }}>
@@ -543,47 +656,60 @@ export default function IndexerPage() {
           <DataGridPro
             rows={(state.roots || [])
               .filter((r) => machineFilter === 'All' || (r.seen_on || []).includes(machineFilter))
-              .map((r, idx) => ({ id: r.id || r.path || idx, ...r }))}
+              .map((r, idx) => ({ id: r.__rootId || r.id || r.path || idx, ...r }))}
             columns={[
               {
-                field: 'actions_scan',
-                headerName: 'Scan',
-                width: 120,
+                field: 'actions',
+                headerName: '',
+                width: 64,
                 renderCell: (params) => (
-                  <Stack direction="row" spacing={1}>
-                    <Tooltip title="Scan this root now">
-                      <IconButton
-                        size="small"
-                        onClick={async (e) => {
-                          e.stopPropagation();
-                          try {
-                            setLoading(true);
-                            const res = await window.electronAPI.scanManualRootNow?.(params.row.id);
-                            if (!res?.ok) {
-                              setError(res?.error || 'Failed to scan folder.');
-                            } else {
-                              setError(null);
+                  <Stack direction="row" spacing={0.5} alignItems="center">
+                    <ActionMenu
+                      items={[
+                        {
+                          key: 'scan',
+                          label: 'Scan now',
+                          icon: <PlayArrowIcon fontSize="small" />,
+                          disabled: !window.electronAPI?.scanManualRootNow || !params.row.__rootId || !rootsAccessMap[params.row.__rootId],
+                          onClick: async () => {
+                            try {
+                              setLoading(true);
+                              const res = await window.electronAPI.scanManualRootNow?.(params.row.__rootId);
+                              if (!res?.ok) setError(res?.error || 'Failed to scan folder.');
+                              else setError(null);
+                              await load();
+                            } finally {
+                              setLoading(false);
                             }
-                            await load();
-                          } finally {
-                            setLoading(false);
                           }
-                        }}
-                      >
-                        <PlayArrowIcon fontSize="small" />
-                      </IconButton>
-                    </Tooltip>
-                    <Tooltip title="Open">
-                      <span>
-                        <IconButton
-                          size="small"
-                          disabled={!rootsAccessMap[params.row.id]}
-                          onClick={(e) => {
-                            e.stopPropagation();
+                        },
+                        {
+                          key: 'thumbs',
+                          label: 'Generate thumbnails',
+                          icon: <PhotoLibraryOutlinedIcon fontSize="small" />,
+                          disabled: !window.electronAPI?.scanManualRootWithThumbs || !params.row.__rootId || !rootsAccessMap[params.row.__rootId],
+                          onClick: async () => {
+                            try {
+                              setLoading(true);
+                              const res = await window.electronAPI.scanManualRootWithThumbs(params.row.__rootId);
+                              if (!res?.ok) setError(res?.error || 'Failed to start thumbnail scan.');
+                              else setError(null);
+                              await load();
+                            } finally {
+                              setLoading(false);
+                            }
+                          }
+                        },
+                        {
+                          key: 'details',
+                          label: 'Open details',
+                          icon: <InfoOutlinedIcon fontSize="small" />,
+                          disabled: false,
+                          onClick: () => {
                             navigate('/detail', {
                               state: {
                                 item: {
-                                  volume_uuid: `manual:${params.row.id}`,
+                                  volume_uuid: `manual:${params.row.__rootId || params.row.id}`,
                                   root_path: params.row.path,
                                   relative_path: '',
                                   name: params.row.label || params.row.path,
@@ -592,17 +718,36 @@ export default function IndexerPage() {
                                 }
                               }
                             });
-                          }}
-                        >
-                          <OpenInNewIcon fontSize="small" />
-                        </IconButton>
-                      </span>
-                    </Tooltip>
+                          }
+                        },
+                        {
+                          key: 'delete',
+                          label: 'Disable / Delete…',
+                          icon: <DeleteOutlineIcon fontSize="small" />,
+                          disabled: false,
+                          onClick: () => {
+                            openConfirm({
+                              type: 'root',
+                              id: params.row.__rootId || params.row.id,
+                              name: params.row.label || params.row.path
+                            });
+                          }
+                        }
+                      ]}
+                    />
+                    {rootsAccessMap[params.row.__rootId] ? (
+                      <CheckCircleIcon sx={{ color: 'success.main', fontSize: 18 }} />
+                    ) : null}
                   </Stack>
                 )
               },
-              { field: 'label', headerName: 'Label', width: 160, valueGetter: (p) => p.row.label || '—' },
-              { field: 'last_scan_at', headerName: 'Last Scan', width: 180, valueGetter: (p) => formatDateTime(p.row.last_scan_at) },
+              { field: 'label', headerName: 'Name', flex: 1, minWidth: 180, valueGetter: (p) => p.row.label || p.row.path || '—' },
+              {
+                field: 'last_scan_at',
+                headerName: 'Last Scan',
+                width: 180,
+                valueGetter: (p) => formatDateTime(p.row.last_scan_at)
+              },
               {
                 field: 'is_active',
                 headerName: 'Active',
@@ -620,18 +765,21 @@ export default function IndexerPage() {
                 )
               },
               {
-                field: 'last_run_status',
-                headerName: 'Last Result',
-                width: 130,
-                renderCell: (p) => <ResultChip status={p.row.last_run_status} />
-              },
-              {
-                field: 'last_run_duration_ms',
-                headerName: 'Duration',
+                field: 'auto_purge',
+                headerName: 'Auto Purge',
                 width: 110,
-                valueGetter: (p) => formatDuration(p.row.last_run_duration_ms)
+                renderCell: (p) => (
+                  <Switch
+                    size="small"
+                    checked={p.row.auto_purge !== 0}
+                    onChange={async (e) => {
+                      const next = e.target.checked;
+                      await window.electronAPI.indexerSetManualRootAutoPurge?.(p.row.id, next);
+                      await load();
+                    }}
+                  />
+                )
               },
-              { field: 'path', headerName: 'Path', flex: 1, minWidth: 320 },
               {
                 field: 'scan_interval_ms',
                 headerName: 'Interval',
@@ -652,49 +800,8 @@ export default function IndexerPage() {
                   </FormControl>
                 )
               },
-              {
-                field: 'seen_count',
-                headerName: 'Seen',
-                width: 80,
-                type: 'number',
-                valueGetter: (p) => p.row.seen_count ?? 1
-              },
-              {
-                field: 'seen_on',
-                headerName: 'Seen On',
-                width: 200,
-                valueGetter: (p) => {
-                  const arr = p.row.seen_on;
-                  if (!Array.isArray(arr) || arr.length === 0) return '—';
-                  const s = arr.join(', ');
-                  return s.length > 40 ? s.slice(0, 37) + '…' : s;
-                }
-              },
-              { field: 'file_count', headerName: 'Files', width: 90, type: 'number' },
-              { field: 'dir_count', headerName: 'Dirs', width: 90, type: 'number' },
-              { field: 'total_bytes', headerName: 'Bytes', width: 140, valueGetter: (p) => formatBytes(p.row.total_bytes) },
-              {
-                field: 'actions_delete',
-                headerName: 'Delete',
-                width: 110,
-                renderCell: (params) => (
-                  <Tooltip title="Disable / Delete options">
-                    <IconButton
-                      size="small"
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        openConfirm({
-                          type: 'root',
-                          id: params.row.id,
-                          name: params.row.label || params.row.path
-                        });
-                      }}
-                    >
-                      <CloseIcon fontSize="small" />
-                    </IconButton>
-                  </Tooltip>
-                )
-              }
+              { field: 'path', headerName: 'Path', flex: 1.2, minWidth: 220 },
+              { field: 'id', headerName: 'Root ID', flex: 1.2, minWidth: 200 },
             ]}
             disableRowSelectionOnClick
             slots={{ toolbar: GridToolbar }}
@@ -775,6 +882,28 @@ export default function IndexerPage() {
               disabled={!confirmTarget}
             >
               Disable + Delete Data
+            </Button>
+          </DialogActions>
+        </Dialog>
+        <Dialog open={apiTokenDialogOpen} onClose={() => setApiTokenDialogOpen(false)} maxWidth="sm" fullWidth>
+          <DialogTitle>Enter Remote API Token</DialogTitle>
+          <DialogContent dividers>
+            <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
+              Add the token for the relay server so this indexer can read and write the shared database.
+            </Typography>
+            <TextField
+              autoFocus
+              fullWidth
+              label="API Token"
+              type="password"
+              value={apiTokenValue}
+              onChange={(event) => setApiTokenValue(event.target.value)}
+            />
+          </DialogContent>
+          <DialogActions>
+            <Button onClick={() => setApiTokenDialogOpen(false)}>Later</Button>
+            <Button variant="contained" onClick={saveApiToken} disabled={!apiTokenValue.trim()}>
+              Save Token
             </Button>
           </DialogActions>
         </Dialog>

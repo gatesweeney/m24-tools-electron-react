@@ -1,5 +1,7 @@
 console.log('Electron: starting');
 
+require('dotenv').config();
+
 const { app, BrowserWindow, ipcMain, dialog, Tray, Menu, nativeImage, Notification } = require('electron');
 const path = require('path');
 const fs = require('fs');
@@ -11,9 +13,8 @@ const { getInfoJson, normalizeFormats, downloadWithFormat } = require('./ytdlp')
 const { resolveBin } = require('./binPath');
 const { startIndexerWorker } = require('./workerLauncher');
 const crypto = require('crypto');
-const indexerQueries = require('../indexer/worker/db/queries');
+const { getSetting, setSetting, openSettingsDb } = require('../indexer/worker/db/settingsDb');
 const { getThumbsDir, getLutsDir } = require('../indexer/worker/config/paths');
-const { searchIndexer } = require('../indexer/worker/db/search');
 const worker = require('../indexer/worker/main');
 const { sendWorkerMessage, getLatestIndexerStatus, onWorkerMessage } = require('./workerLauncher');
 
@@ -33,6 +34,91 @@ let mainWindow;
 
 let tray = null;
 let isQuitting = false;
+
+const REMOTE_API_URL = 'https://api1.motiontwofour.com';
+const REMOTE_API_ENABLED = process.env.M24_REMOTE_API_DISABLED !== '1';
+
+async function remoteRequest(pathname, { method = 'GET', body } = {}) {
+  if (!REMOTE_API_ENABLED || !REMOTE_API_URL) return { ok: false, error: 'remote_disabled' };
+  const url = `${REMOTE_API_URL}${pathname}`;
+  const headers = {};
+  const token = getSetting('remote_api_token') || '';
+  if (token) headers.Authorization = `Bearer ${token}`;
+  if (body) headers['Content-Type'] = 'application/json';
+  try {
+    console.log('[remote] request', { method, url });
+    const res = await fetch(url, {
+      method,
+      headers,
+      body: body ? JSON.stringify(body) : undefined
+    });
+    const json = await res.json().catch(() => ({}));
+    console.log('[remote] response', { url, status: res.status, ok: json?.ok });
+    return json;
+  } catch (err) {
+    console.log('[remote] request failed', { url, message: err?.message || err });
+    return { ok: false, error: 'fetch_failed' };
+  }
+}
+
+function getRemoteDeviceId() {
+  return getSetting('machine_id') || 'local';
+}
+
+async function remoteFetchState() {
+  const deviceId = encodeURIComponent(getRemoteDeviceId());
+  console.log('[remote] fetch state', { deviceId });
+  return remoteRequest(`/api/state?deviceId=${deviceId}`);
+}
+
+async function remoteUpsertState({ volumes = [], manualRoots = [], files = [] } = {}) {
+  console.log('[remote] upsert state', {
+    volumes: volumes.length,
+    manualRoots: manualRoots.length,
+    files: files.length
+  });
+  return remoteRequest('/api/state/upsert', {
+    method: 'POST',
+    body: {
+      deviceId: getRemoteDeviceId(),
+      volumes,
+      manualRoots,
+      files
+    }
+  });
+}
+
+async function remoteDeleteVolume(volumeUuid) {
+  return remoteRequest('/api/volume/delete', {
+    method: 'POST',
+    body: {
+      volumeUuid,
+      deviceId: getRemoteDeviceId(),
+      deleteFiles: true
+    }
+  });
+}
+
+async function remoteDeleteManualRoot(rootId) {
+  return remoteRequest('/api/manual-root/delete', {
+    method: 'POST',
+    body: {
+      rootId,
+      deviceId: getRemoteDeviceId(),
+      deleteFiles: true
+    }
+  });
+}
+
+function makeManualRootId(rootPath) {
+  const deviceId = getRemoteDeviceId();
+  const hash = crypto.createHash('sha256').update(`${deviceId}::${rootPath}`).digest('hex');
+  const raw = BigInt(`0x${hash.slice(0, 16)}`);
+  const max = BigInt('9223372036854775807');
+  const id = raw % max;
+  return (id === BigInt(0) ? BigInt(1) : id).toString();
+}
+
 
 // simple rate limit for notifications
 let lastNotifyAt = 0;
@@ -452,7 +538,11 @@ ipcMain.handle('yt:run', async (evt, payload) => {
 
 ipcMain.handle('indexer:getState', async () => {
   try {
-    return { ok: true, state: indexerQueries.getIndexerState() };
+    const remote = await remoteFetchState();
+    if (remote?.ok) {
+      return { ok: true, state: { drives: remote.volumes || [], roots: remote.manualRoots || [], devices: remote.devices || [] } };
+    }
+    return { ok: false, error: remote?.error || 'remote_unavailable' };
   } catch (e) {
     return { ok: false, error: e.message || String(e) };
   }
@@ -460,8 +550,9 @@ ipcMain.handle('indexer:getState', async () => {
 
 ipcMain.handle('search:query', async (_evt, q, opts) => {
   try {
-    const results = searchIndexer(q, opts || {});
-    return { ok: true, results };
+    const remote = await remoteRequest(`/api/search?q=${encodeURIComponent(q)}`);
+    if (remote?.ok) return { ok: true, results: remote.results || [] };
+    return { ok: false, error: remote?.error || 'remote_unavailable' };
   } catch (e) {
     return { ok: false, error: e.message || String(e) };
   }
@@ -469,8 +560,10 @@ ipcMain.handle('search:query', async (_evt, q, opts) => {
 
 ipcMain.handle('search:getVolumeInfo', async (_evt, volumeUuid) => {
   try {
-    const volume = indexerQueries.getVolumeByUuid(volumeUuid);
-    return { ok: true, volume };
+    const deviceId = encodeURIComponent(getRemoteDeviceId());
+    const remote = await remoteRequest(`/api/volume?volumeUuid=${encodeURIComponent(volumeUuid)}&deviceId=${deviceId}`);
+    if (remote?.ok) return { ok: true, volume: remote.volume || null };
+    return { ok: false, error: remote?.error || 'remote_unavailable' };
   } catch (e) {
     return { ok: false, error: e.message || String(e) };
   }
@@ -487,8 +580,10 @@ ipcMain.handle('search:getMediaInfo', async (_evt, filePath) => {
 
 ipcMain.handle('indexer:getDirectoryContents', async (_evt, volumeUuid, rootPath, dirRelativePath) => {
   try {
-    const files = indexerQueries.getDirectoryContents(volumeUuid, rootPath, dirRelativePath);
-    return { ok: true, files };
+    const deviceId = encodeURIComponent(getRemoteDeviceId());
+    const remote = await remoteRequest(`/api/dir/contents?volumeUuid=${encodeURIComponent(volumeUuid)}&rootPath=${encodeURIComponent(rootPath)}&dirRel=${encodeURIComponent(dirRelativePath || '')}&deviceId=${deviceId}`);
+    if (remote?.ok) return { ok: true, files: remote.files || [] };
+    return { ok: false, error: remote?.error || 'remote_unavailable' };
   } catch (e) {
     return { ok: false, error: e.message || String(e) };
   }
@@ -496,8 +591,10 @@ ipcMain.handle('indexer:getDirectoryContents', async (_evt, volumeUuid, rootPath
 
 ipcMain.handle('indexer:getDirectoryContentsRecursive', async (_evt, volumeUuid, rootPath, dirRelativePath, limit, offset) => {
   try {
-    const files = indexerQueries.getDirectoryContentsRecursive(volumeUuid, rootPath, dirRelativePath, limit, offset);
-    return { ok: true, files };
+    const deviceId = encodeURIComponent(getRemoteDeviceId());
+    const remote = await remoteRequest(`/api/dir/contents_recursive?volumeUuid=${encodeURIComponent(volumeUuid)}&rootPath=${encodeURIComponent(rootPath)}&dirRel=${encodeURIComponent(dirRelativePath || '')}&limit=${limit || 250}&offset=${offset || 0}&deviceId=${deviceId}`);
+    if (remote?.ok) return { ok: true, files: remote.files || [] };
+    return { ok: false, error: remote?.error || 'remote_unavailable' };
   } catch (e) {
     return { ok: false, error: e.message || String(e) };
   }
@@ -505,8 +602,10 @@ ipcMain.handle('indexer:getDirectoryContentsRecursive', async (_evt, volumeUuid,
 
 ipcMain.handle('indexer:getDirectoryStats', async (_evt, volumeUuid, rootPath, dirRelativePath) => {
   try {
-    const stats = indexerQueries.getDirectoryStats(volumeUuid, rootPath, dirRelativePath);
-    return { ok: true, stats };
+    const deviceId = encodeURIComponent(getRemoteDeviceId());
+    const remote = await remoteRequest(`/api/dir/stats?volumeUuid=${encodeURIComponent(volumeUuid)}&rootPath=${encodeURIComponent(rootPath)}&dirRel=${encodeURIComponent(dirRelativePath || '')}&deviceId=${deviceId}`);
+    if (remote?.ok) return { ok: true, stats: remote.stats || {} };
+    return { ok: false, error: remote?.error || 'remote_unavailable' };
   } catch (e) {
     return { ok: false, error: e.message || String(e) };
   }
@@ -514,7 +613,11 @@ ipcMain.handle('indexer:getDirectoryStats', async (_evt, volumeUuid, rootPath, d
 
 ipcMain.handle('indexer:setVolumeActive', async (_evt, volumeUuid, isActive) => {
   try {
-    return { ok: true, state: indexerQueries.setVolumeActive(volumeUuid, isActive) };
+    const remote = await remoteUpsertState({
+      volumes: [{ volume_uuid: volumeUuid, is_active: isActive ? 1 : 0, device_id: getRemoteDeviceId() }]
+    });
+    if (!remote?.ok) return { ok: false, error: remote?.error || 'remote_unavailable' };
+    return { ok: true };
   } catch (e) {
     return { ok: false, error: e.message || String(e) };
   }
@@ -522,7 +625,11 @@ ipcMain.handle('indexer:setVolumeActive', async (_evt, volumeUuid, isActive) => 
 
 ipcMain.handle('indexer:setVolumeInterval', async (_evt, volumeUuid, intervalMs) => {
   try {
-    return { ok: true, state: indexerQueries.setVolumeInterval(volumeUuid, intervalMs) };
+    const remote = await remoteUpsertState({
+      volumes: [{ volume_uuid: volumeUuid, scan_interval_ms: intervalMs, device_id: getRemoteDeviceId() }]
+    });
+    if (!remote?.ok) return { ok: false, error: remote?.error || 'remote_unavailable' };
+    return { ok: true };
   } catch (e) {
     return { ok: false, error: e.message || String(e) };
   }
@@ -530,7 +637,11 @@ ipcMain.handle('indexer:setVolumeInterval', async (_evt, volumeUuid, intervalMs)
 
 ipcMain.handle('indexer:setVolumeAutoPurge', async (_evt, volumeUuid, enabled) => {
   try {
-    return { ok: true, state: indexerQueries.setVolumeAutoPurge(volumeUuid, enabled) };
+    const remote = await remoteUpsertState({
+      volumes: [{ volume_uuid: volumeUuid, auto_purge: enabled ? 1 : 0, device_id: getRemoteDeviceId() }]
+    });
+    if (!remote?.ok) return { ok: false, error: remote?.error || 'remote_unavailable' };
+    return { ok: true };
   } catch (e) {
     return { ok: false, error: e.message || String(e) };
   }
@@ -538,7 +649,22 @@ ipcMain.handle('indexer:setVolumeAutoPurge', async (_evt, volumeUuid, enabled) =
 
 ipcMain.handle('indexer:addManualRoot', async (_evt, rootPath) => {
   try {
-    return { ok: true, state: indexerQueries.addManualRoot(rootPath) };
+    const stateRes = await remoteFetchState();
+    const existing = stateRes?.ok
+      ? (stateRes.manualRoots || []).find((r) => r.path === rootPath)
+      : null;
+    if (existing) return { ok: true, root: existing };
+
+    const rootId = makeManualRootId(rootPath);
+    const record = {
+      id: rootId,
+      path: rootPath,
+      label: path.basename(rootPath),
+      is_active: 1
+    };
+    const remote = await remoteUpsertState({ manualRoots: [record] });
+    if (!remote?.ok) return { ok: false, error: remote?.error || 'remote_unavailable' };
+    return { ok: true, root: record };
   } catch (e) {
     return { ok: false, error: e.message || String(e) };
   }
@@ -546,7 +672,11 @@ ipcMain.handle('indexer:addManualRoot', async (_evt, rootPath) => {
 
 ipcMain.handle('indexer:setManualRootActive', async (_evt, rootId, isActive) => {
   try {
-    return { ok: true, state: indexerQueries.setManualRootActive(rootId, isActive) };
+    const remote = await remoteUpsertState({
+      manualRoots: [{ id: rootId, is_active: isActive ? 1 : 0, device_id: getRemoteDeviceId() }]
+    });
+    if (!remote?.ok) return { ok: false, error: remote?.error || 'remote_unavailable' };
+    return { ok: true };
   } catch (e) {
     return { ok: false, error: e.message || String(e) };
   }
@@ -554,7 +684,23 @@ ipcMain.handle('indexer:setManualRootActive', async (_evt, rootId, isActive) => 
 
 ipcMain.handle('indexer:setManualRootInterval', async (_evt, rootId, intervalMs) => {
   try {
-    return { ok: true, state: indexerQueries.setManualRootInterval(rootId, intervalMs) };
+    const remote = await remoteUpsertState({
+      manualRoots: [{ id: rootId, scan_interval_ms: intervalMs, device_id: getRemoteDeviceId() }]
+    });
+    if (!remote?.ok) return { ok: false, error: remote?.error || 'remote_unavailable' };
+    return { ok: true };
+  } catch (e) {
+    return { ok: false, error: e.message || String(e) };
+  }
+});
+
+ipcMain.handle('indexer:setManualRootAutoPurge', async (_evt, rootId, enabled) => {
+  try {
+    const remote = await remoteUpsertState({
+      manualRoots: [{ id: rootId, auto_purge: enabled ? 1 : 0, device_id: getRemoteDeviceId() }]
+    });
+    if (!remote?.ok) return { ok: false, error: remote?.error || 'remote_unavailable' };
+    return { ok: true };
   } catch (e) {
     return { ok: false, error: e.message || String(e) };
   }
@@ -562,7 +708,11 @@ ipcMain.handle('indexer:setManualRootInterval', async (_evt, rootId, intervalMs)
 
 ipcMain.handle('indexer:removeManualRoot', async (_evt, rootId) => {
   try {
-    return { ok: true, state: indexerQueries.removeManualRoot(rootId) };
+    const remote = await remoteUpsertState({
+      manualRoots: [{ id: rootId, is_active: 0, device_id: getRemoteDeviceId() }]
+    });
+    if (!remote?.ok) return { ok: false, error: remote?.error || 'remote_unavailable' };
+    return { ok: true };
   } catch (e) {
     return { ok: false, error: e.message || String(e) };
   }
@@ -570,7 +720,11 @@ ipcMain.handle('indexer:removeManualRoot', async (_evt, rootId) => {
 
 ipcMain.handle('indexer:disableVolume', async (_evt, volumeUuid) => {
   try {
-    return { ok: true, state: indexerQueries.disableVolume(volumeUuid) };
+    const remote = await remoteUpsertState({
+      volumes: [{ volume_uuid: volumeUuid, is_active: 0, device_id: getRemoteDeviceId() }]
+    });
+    if (!remote?.ok) return { ok: false, error: remote?.error || 'remote_unavailable' };
+    return { ok: true };
   } catch (e) {
     return { ok: false, error: e.message || String(e) };
   }
@@ -578,7 +732,9 @@ ipcMain.handle('indexer:disableVolume', async (_evt, volumeUuid) => {
 
 ipcMain.handle('indexer:disableAndDeleteVolumeData', async (_evt, volumeUuid) => {
   try {
-    return { ok: true, state: indexerQueries.disableAndDeleteVolumeData(volumeUuid) };
+    const remote = await remoteDeleteVolume(volumeUuid);
+    if (!remote?.ok) return { ok: false, error: remote?.error || 'remote_unavailable' };
+    return { ok: true };
   } catch (e) {
     return { ok: false, error: e.message || String(e) };
   }
@@ -586,7 +742,11 @@ ipcMain.handle('indexer:disableAndDeleteVolumeData', async (_evt, volumeUuid) =>
 
 ipcMain.handle('indexer:disableManualRoot', async (_evt, rootId) => {
   try {
-    return { ok: true, state: indexerQueries.disableManualRoot(rootId) };
+    const remote = await remoteUpsertState({
+      manualRoots: [{ id: rootId, is_active: 0, device_id: getRemoteDeviceId() }]
+    });
+    if (!remote?.ok) return { ok: false, error: remote?.error || 'remote_unavailable' };
+    return { ok: true };
   } catch (e) {
     return { ok: false, error: e.message || String(e) };
   }
@@ -594,7 +754,9 @@ ipcMain.handle('indexer:disableManualRoot', async (_evt, rootId) => {
 
 ipcMain.handle('indexer:disableAndDeleteManualRootData', async (_evt, rootId) => {
   try {
-    return { ok: true, state: indexerQueries.disableAndDeleteManualRootData(rootId) };
+    const remote = await remoteDeleteManualRoot(rootId);
+    if (!remote?.ok) return { ok: false, error: remote?.error || 'remote_unavailable' };
+    return { ok: true };
   } catch (e) {
     return { ok: false, error: e.message || String(e) };
   }
@@ -605,9 +767,16 @@ ipcMain.handle('indexer:scanAllNow', async () => {
   return queued ? { ok: true } : { ok: false, error: 'Indexer worker not running.' };
 });
 
+ipcMain.handle('indexer:scanAllWithThumbs', async () => {
+  const queued = sendWorkerMessage({ cmd: 'manualScan', payload: { type: 'scanAll', generateThumbs: true } });
+  return queued ? { ok: true } : { ok: false, error: 'Indexer worker not running.' };
+});
+
 ipcMain.handle('indexer:scanVolumeNow', async (_evt, volumeUuid) => {
   try {
-    const vol = indexerQueries.getVolumeByUuid(volumeUuid);
+    const stateRes = await remoteFetchState();
+    if (!stateRes?.ok) return { ok: false, error: stateRes?.error || 'remote_unavailable' };
+    const vol = (stateRes.volumes || []).find((v) => v.volume_uuid === volumeUuid);
     if (!vol) return { ok: false, error: 'Volume not found.' };
     const mountPoint = vol.mount_point_last;
     if (!mountPoint || !fs.existsSync(mountPoint)) {
@@ -620,9 +789,53 @@ ipcMain.handle('indexer:scanVolumeNow', async (_evt, volumeUuid) => {
   }
 });
 
+ipcMain.handle('indexer:scanVolumeWithThumbs', async (_evt, volumeUuid) => {
+  try {
+    const stateRes = await remoteFetchState();
+    if (!stateRes?.ok) return { ok: false, error: stateRes?.error || 'remote_unavailable' };
+    const vol = (stateRes.volumes || []).find((v) => v.volume_uuid === volumeUuid);
+    if (!vol) return { ok: false, error: 'Volume not found.' };
+    const mountPoint = vol.mount_point_last;
+    if (!mountPoint || !fs.existsSync(mountPoint)) {
+      return { ok: false, error: 'Drive not connected.' };
+    }
+    const queued = sendWorkerMessage({
+      cmd: 'manualScan',
+      payload: { type: 'volume', volumeUuid, generateThumbs: true }
+    });
+    return queued ? { ok: true } : { ok: false, error: 'Indexer worker not running.' };
+  } catch (e) {
+    return { ok: false, error: e.message || String(e) };
+  }
+});
+
+ipcMain.handle('indexer:ejectVolume', async (_evt, volumeUuid) => {
+  try {
+    if (process.platform !== 'darwin') return { ok: false, error: 'Unsupported platform.' };
+    const stateRes = await remoteFetchState();
+    if (!stateRes?.ok) return { ok: false, error: stateRes?.error || 'remote_unavailable' };
+    const vol = (stateRes.volumes || []).find((v) => v.volume_uuid === volumeUuid);
+    if (!vol) return { ok: false, error: 'Volume not found.' };
+    const mountPoint = vol.mount_point_last;
+    if (!mountPoint || !fs.existsSync(mountPoint)) {
+      return { ok: false, error: 'Drive not connected.' };
+    }
+    await new Promise((resolve, reject) => {
+      const p = spawn('diskutil', ['eject', mountPoint]);
+      p.on('error', reject);
+      p.on('close', (code) => (code === 0 ? resolve() : reject(new Error(`diskutil exited ${code}`))));
+    });
+    return { ok: true };
+  } catch (e) {
+    return { ok: false, error: e.message || String(e) };
+  }
+});
+
 ipcMain.handle('indexer:scanManualRootNow', async (_evt, rootId) => {
   try {
-    const root = indexerQueries.getManualRootById?.(rootId);
+    const stateRes = await remoteFetchState();
+    if (!stateRes?.ok) return { ok: false, error: stateRes?.error || 'remote_unavailable' };
+    const root = (stateRes.manualRoots || []).find((r) => `${r.id}` === `${rootId}`);
     if (!root) return { ok: false, error: 'Manual root not found.' };
     if (!root.path || !fs.existsSync(root.path)) {
       return { ok: false, error: 'Folder not accessible.' };
@@ -634,14 +847,46 @@ ipcMain.handle('indexer:scanManualRootNow', async (_evt, rootId) => {
   }
 });
 
+ipcMain.handle('indexer:scanManualRootWithThumbs', async (_evt, rootId) => {
+  try {
+    const stateRes = await remoteFetchState();
+    if (!stateRes?.ok) return { ok: false, error: stateRes?.error || 'remote_unavailable' };
+    const root = (stateRes.manualRoots || []).find((r) => `${r.id}` === `${rootId}`);
+    if (!root) return { ok: false, error: 'Manual root not found.' };
+    if (!root.path || !fs.existsSync(root.path)) {
+      return { ok: false, error: 'Folder not accessible.' };
+    }
+    const queued = sendWorkerMessage({
+      cmd: 'manualScan',
+      payload: { type: 'manualRoot', rootId, generateThumbs: true }
+    });
+    return queued ? { ok: true } : { ok: false, error: 'Indexer worker not running.' };
+  } catch (e) {
+    return { ok: false, error: e.message || String(e) };
+  }
+});
+
+ipcMain.handle('indexer:normalizeManualRootId', async (_evt, rootPath) => {
+  try {
+    if (!rootPath) return { ok: false, error: 'missing_path' };
+    return { ok: true, id: makeManualRootId(rootPath) };
+  } catch (e) {
+    return { ok: false, error: e.message || String(e) };
+  }
+});
+
 ipcMain.handle('indexer:listVolumeFiles', async (_evt, volumeUuid, limit = 500) => {
   try {
-    const vol = indexerQueries.getVolumeByUuid(volumeUuid);
+    const stateRes = await remoteFetchState();
+    if (!stateRes?.ok) return { ok: false, error: stateRes?.error || 'remote_unavailable' };
+    const vol = (stateRes.volumes || []).find((v) => v.volume_uuid === volumeUuid);
     if (!vol) return { ok: false, error: 'Volume not found.' };
     const rootPath = vol.mount_point_last;
     if (!rootPath) return { ok: false, error: 'Volume not mounted.' };
-    const files = indexerQueries.getDirectoryContentsRecursive(volumeUuid, rootPath, '', limit, 0);
-    return { ok: true, files };
+    const deviceId = encodeURIComponent(getRemoteDeviceId());
+    const remote = await remoteRequest(`/api/dir/contents_recursive?volumeUuid=${encodeURIComponent(volumeUuid)}&rootPath=${encodeURIComponent(rootPath)}&dirRel=&limit=${limit || 500}&offset=0&deviceId=${deviceId}`);
+    if (!remote?.ok) return { ok: false, error: remote?.error || 'remote_unavailable' };
+    return { ok: true, files: remote.files || [] };
   } catch (e) {
     return { ok: false, error: e.message || String(e) };
   }
@@ -771,19 +1016,14 @@ function waveformImagePath(filePath, stats, opts = {}) {
 }
 
 function readThumbCacheMaxBytes() {
-  const raw = indexerQueries.getSetting?.('thumb_cache_max_gb');
+  const raw = getSetting('thumb_cache_max_gb');
   const num = parseFloat(raw || '0');
   if (!Number.isFinite(num) || num <= 0) return 0;
   return Math.floor(num * 1024 * 1024 * 1024);
 }
 
 function getProtectedThumbsSet() {
-  const paths = indexerQueries.getVolumeThumbPaths?.() || [];
-  const set = new Set();
-  for (const p of paths) {
-    if (p) set.add(path.resolve(p));
-  }
-  return set;
+  return new Set();
 }
 
 function runThumbCacheMaintenance() {
@@ -822,11 +1062,10 @@ function runThumbCacheMaintenance() {
 
 function runAutoPurgeMaintenance() {
   try {
-    const raw = indexerQueries.getSetting?.('volume_purge_age_days');
+    const raw = getSetting('volume_purge_age_days');
     const days = parseInt(raw || '0', 10);
     if (!Number.isFinite(days) || days <= 0) return;
-    const cutoff = new Date(Date.now() - days * 24 * 60 * 60 * 1000).toISOString();
-    indexerQueries.purgeFilesOlderThan?.(cutoff);
+    // Purge is now handled server-side; no local DB data to clean.
   } catch (e) {
     console.log('[auto-purge] failed', e?.message || e);
   }
@@ -1081,7 +1320,7 @@ ipcMain.handle('media:ensureProxyMp4', async (_evt, filePath) => {
 
 ipcMain.handle('indexer:getSetting', async (_evt, key) => {
   try {
-    return { ok: true, value: indexerQueries.getSetting(key) };
+    return { ok: true, value: getSetting(key) };
   } catch (e) {
     return { ok: false, error: e.message || String(e) };
   }
@@ -1089,7 +1328,7 @@ ipcMain.handle('indexer:getSetting', async (_evt, key) => {
 
 ipcMain.handle('indexer:setSetting', async (_evt, key, value) => {
   try {
-    return { ok: true, result: indexerQueries.setSetting(key, value) };
+    return { ok: true, result: setSetting(key, value) };
   } catch (e) {
     return { ok: false, error: e.message || String(e) };
   }
@@ -1229,8 +1468,7 @@ function getWhisperModelPath() {
 // Get cached transcription from DB
 function getCachedTranscription(filePath) {
   try {
-    const { openDb } = require('../indexer/worker/db/openDb');
-    const db = openDb();
+    const db = openSettingsDb();
     const row = db.prepare('SELECT * FROM transcriptions WHERE file_path = ?').get(filePath);
     db.close();
     return row || null;
@@ -1243,8 +1481,7 @@ function getCachedTranscription(filePath) {
 // Save transcription to DB
 function saveTranscription(filePath, text, language, durationSec, model) {
   try {
-    const { openDb } = require('../indexer/worker/db/openDb');
-    const db = openDb();
+    const db = openSettingsDb();
     db.prepare(`
       INSERT INTO transcriptions (file_path, text, language, duration_sec, transcribed_at, model)
       VALUES (?, ?, ?, ?, datetime('now'), ?)

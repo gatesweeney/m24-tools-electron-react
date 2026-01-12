@@ -13,6 +13,7 @@ import ListItemText from '@mui/material/ListItemText';
 import FolderIcon from '@mui/icons-material/Folder';
 import InsertDriveFileIcon from '@mui/icons-material/InsertDriveFile';
 import ArrowBackIcon from '@mui/icons-material/ArrowBack';
+import ChevronLeftIcon from '@mui/icons-material/ChevronLeft';
 import OpenInNewIcon from '@mui/icons-material/OpenInNew';
 import DetailPanel from '../components/DetailPanel';
 import MediaPlayer from '../components/MediaPlayer';
@@ -48,6 +49,7 @@ export default function AssetDetailPage() {
   const [item, setItem] = useState(location.state?.item || null);
   const [contents, setContents] = useState([]);
   const [mediaInfo, setMediaInfo] = useState(null);
+  const historyKey = 'm24_detail_history';
 
   const isDirectory = !!item?.is_dir;
   const ext = getExt(item);
@@ -58,6 +60,56 @@ export default function AssetDetailPage() {
   const isR3D = ext === 'r3d';
   const itemPath = item?.path || buildPath(item?.root_path, item?.relative_path);
   const resolvedItem = itemPath ? { ...item, path: itemPath } : item;
+
+  useEffect(() => {
+    if (location.state?.item) {
+      setItem(location.state.item);
+    }
+  }, [location.state?.item]);
+
+  const historyItem = useMemo(() => {
+    if (!item) return null;
+    return {
+      volume_uuid: item.volume_uuid,
+      root_path: item.root_path,
+      relative_path: item.relative_path,
+      name: item.name,
+      path: item.path,
+      is_dir: item.is_dir
+    };
+  }, [item]);
+
+  useEffect(() => {
+    if (!historyItem) return;
+    try {
+      const raw = sessionStorage.getItem(historyKey);
+      const parsed = raw ? JSON.parse(raw) : [];
+      const next = Array.isArray(parsed) ? parsed : [];
+      const last = next[next.length - 1];
+      if (!last || last.path !== historyItem.path) {
+        next.push(historyItem);
+        sessionStorage.setItem(historyKey, JSON.stringify(next.slice(-50)));
+      }
+    } catch {}
+  }, [historyItem, historyKey]);
+
+  const handleBackItem = useCallback(() => {
+    try {
+      const raw = sessionStorage.getItem(historyKey);
+      const parsed = raw ? JSON.parse(raw) : [];
+      if (!Array.isArray(parsed) || parsed.length < 2) {
+        navigate(-1);
+        return;
+      }
+      parsed.pop();
+      const prev = parsed[parsed.length - 1];
+      sessionStorage.setItem(historyKey, JSON.stringify(parsed));
+      setItem(prev);
+      navigate('/detail', { state: { item: prev }, replace: true });
+    } catch {
+      navigate(-1);
+    }
+  }, [historyKey, navigate]);
 
   useEffect(() => {
     if (!item?.is_dir) {
@@ -133,12 +185,19 @@ export default function AssetDetailPage() {
         <Stack spacing={2} sx={{ flex: 1, minHeight: 0, overflow: 'hidden' }}>
           <Stack direction="row" spacing={1} alignItems="center" justifyContent="space-between">
             <Stack direction="row" spacing={1} alignItems="center">
-              <IconButton onClick={() => navigate(-1)} size="small">
+              <IconButton onClick={handleBackItem} size="small">
                 <ArrowBackIcon fontSize="small" />
               </IconButton>
               <Typography variant="h5">{item.name || item.path}</Typography>
             </Stack>
             <Stack direction="row" spacing={1}>
+              <Button
+                variant="text"
+                startIcon={<ChevronLeftIcon />}
+                onClick={() => navigate('/indexer')}
+              >
+                Back to Indexer
+              </Button>
               <Button variant="outlined" onClick={handleOpenFinder}>Reveal in Finder</Button>
               <Button variant="contained" onClick={handleOpen} startIcon={<OpenInNewIcon />}>
                 Open

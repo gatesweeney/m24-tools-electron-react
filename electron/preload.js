@@ -102,6 +102,9 @@ indexerSetManualRootActive: async (rootId, isActive) =>
 indexerSetManualRootInterval: async (rootId, intervalMs) =>
   ipcRenderer.invoke('indexer:setManualRootInterval', rootId, intervalMs),
 
+indexerSetManualRootAutoPurge: async (rootId, enabled) =>
+  ipcRenderer.invoke('indexer:setManualRootAutoPurge', rootId, enabled),
+
 indexerRemoveManualRoot: async (rootId) =>
   ipcRenderer.invoke('indexer:removeManualRoot', rootId),
 
@@ -121,7 +124,12 @@ indexerRemoveManualRoot: async (rootId) =>
 scanIndexerNow: async (target) =>
   ipcRenderer.invoke('indexer:scanNow', target),
 
-scanAllNow: async () => ipcRenderer.invoke('indexer:scanAllNow'),
+  scanAllNow: async () => ipcRenderer.invoke('indexer:scanAllNow'),
+  scanAllWithThumbs: async () => ipcRenderer.invoke('indexer:scanAllWithThumbs'),
+  scanVolumeWithThumbs: async (volumeUuid) => ipcRenderer.invoke('indexer:scanVolumeWithThumbs', volumeUuid),
+  scanManualRootWithThumbs: async (rootId) => ipcRenderer.invoke('indexer:scanManualRootWithThumbs', rootId),
+  ejectVolume: async (volumeUuid) => ipcRenderer.invoke('indexer:ejectVolume', volumeUuid),
+  normalizeManualRootId: async (rootPath) => ipcRenderer.invoke('indexer:normalizeManualRootId', rootPath),
 scanVolumeNow: async (volumeUuid) => ipcRenderer.invoke('indexer:scanVolumeNow', volumeUuid),
 scanManualRootNow: async (rootId) => ipcRenderer.invoke('indexer:scanManualRootNow', rootId),
 listVolumeFiles: async (volumeUuid, limit) => ipcRenderer.invoke('indexer:listVolumeFiles', volumeUuid, limit),

@@ -34,12 +34,14 @@ function startIndexerWorker() {
     workerEntry = workerEntry.replace('app.asar', 'app.asar.unpacked');
   }
 
+  const remoteApiUrl = 'https://api1.motiontwofour.com';
   const env = {
     ...process.env,
     M24_BIN_DIR: binDir,
     ELECTRON_RUN_AS_NODE: '1',
     M24_WORKER_AUTOSTART: '1',
-    M24_MERGE_STATE: '1'
+    M24_MERGE_STATE: '1',
+    M24_REMOTE_API_URL: remoteApiUrl
     };
 
   console.log('[worker] starting indexer worker');
