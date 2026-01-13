@@ -262,7 +262,10 @@ function setupUpdater() {
     console.log('[updater] update downloaded');
     notify('Update ready', 'Restarting to install…');
     sendUpdateStatus({ status: 'downloaded', info, progress: null, error: null });
-    setTimeout(() => autoUpdater.quitAndInstall(), 1500);
+    setTimeout(() => {
+      isQuitting = true;
+      autoUpdater.quitAndInstall();
+    }, 1500);
   });
 }
 
@@ -628,6 +631,7 @@ ipcMain.handle('updater:getStatus', async () => {
 
 ipcMain.handle('updater:quitAndInstall', async () => {
   try {
+    isQuitting = true;
     autoUpdater.quitAndInstall();
     return { ok: true };
   } catch (err) {
