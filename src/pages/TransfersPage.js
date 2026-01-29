@@ -50,6 +50,8 @@ export default function TransfersPage() {
   const [startMinimized, setStartMinimized] = useState(false);
   const [shares, setShares] = useState([]);
   const [deviceId, setDeviceId] = useState('');
+  const [relayStatus, setRelayStatus] = useState(null);
+  const [crocStatus, setCrocStatus] = useState(null);
   const [error, setError] = useState('');
   const [info, setInfo] = useState('');
   const [refreshing, setRefreshing] = useState(false);
@@ -137,6 +139,35 @@ export default function TransfersPage() {
     }
     return () => { if (unsub) unsub(); };
   }, []);
+
+  useEffect(() => {
+    let mounted = true;
+    let timer = null;
+    const loadStatus = async () => {
+      if (!window.electronAPI?.getTransferStatus) return;
+      const res = await window.electronAPI.getTransferStatus();
+      if (!mounted || !res?.ok) return;
+      setRelayStatus(res.relay || null);
+      setCrocStatus(res.croc || null);
+    };
+    loadStatus();
+    timer = setInterval(loadStatus, 15000);
+    return () => {
+      mounted = false;
+      if (timer) clearInterval(timer);
+    };
+  }, []);
+
+  const renderStatusDot = (ok) => (
+    <Box
+      sx={{
+        width: 10,
+        height: 10,
+        borderRadius: '50%',
+        bgcolor: ok == null ? 'grey.600' : (ok ? 'success.main' : 'error.main')
+      }}
+    />
+  );
 
   const addFiles = async () => {
     setError('');
@@ -262,13 +293,23 @@ export default function TransfersPage() {
             Create share links and handle incoming transfers using croc.
           </Typography>
         </Box>
-        <Tooltip title="Refresh">
-          <span>
-            <IconButton onClick={refreshShares} disabled={refreshing}>
-              <RefreshIcon />
-            </IconButton>
-          </span>
-        </Tooltip>
+        <Stack direction="row" spacing={2} alignItems="center">
+          <Stack direction="row" spacing={1} alignItems="center">
+            {renderStatusDot(relayStatus?.ok)}
+            <Typography variant="caption" color="text.secondary">Relay</Typography>
+          </Stack>
+          <Stack direction="row" spacing={1} alignItems="center">
+            {renderStatusDot(crocStatus?.ok)}
+            <Typography variant="caption" color="text.secondary">Croc relay</Typography>
+          </Stack>
+          <Tooltip title="Refresh">
+            <span>
+              <IconButton onClick={refreshShares} disabled={refreshing}>
+                <RefreshIcon />
+              </IconButton>
+            </span>
+          </Tooltip>
+        </Stack>
       </Box>
 
       {error ? <Alert severity="error">{error}</Alert> : null}
@@ -385,6 +426,12 @@ export default function TransfersPage() {
                   <Typography variant="subtitle2" sx={{ textTransform: 'uppercase', letterSpacing: 0.6 }}>
                     {share.ownerDeviceId === deviceId ? 'SENDER' : 'SHARE'}
                   </Typography>
+                  {share.ownerName || share.ownerDeviceId ? (
+                    <Chip
+                      size="small"
+                      label={`from: ${share.ownerName || share.ownerDeviceId}`}
+                    />
+                  ) : null}
                   <Chip size="small" label={share.status || 'open'} />
                   {share.label ? <Chip size="small" label={share.label} /> : null}
                   {share.secretId ? <Chip size="small" label={`id: ${share.secretId}`} /> : null}

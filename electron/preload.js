@@ -22,6 +22,9 @@ contextBridge.exposeInMainWorld('electronAPI', {
   crocList: async () => {
     return await ipcRenderer.invoke('croc:list');
   },
+  getTransferStatus: async () => {
+    return await ipcRenderer.invoke('transfer:status');
+  },
   onCrocEvent: (callback) => {
     const listener = (_event, data) => callback(data);
     ipcRenderer.on('croc:event', listener);

@@ -23,6 +23,7 @@ const fs = require('fs');
 const shell = require('electron').shell;
 const { spawn } = require('child_process');
 const os = require('os');
+const net = require('net');
 const { runProxyJob } = require('./fs-ops');
 const { getInfoJson, normalizeFormats, downloadWithFormat } = require('./ytdlp');
 const { resolveBin } = require('./binPath');
@@ -155,6 +156,66 @@ function updateDockVisibility() {
   const visible = BrowserWindow.getAllWindows().some((win) => win && !win.isDestroyed() && win.isVisible());
   if (visible) app.dock.show();
   else app.dock.hide();
+}
+
+function parseHostPort(input, fallbackPort) {
+  if (!input) return null;
+  const raw = String(input).trim();
+  if (!raw) return null;
+  try {
+    if (raw.includes('://')) {
+      const url = new URL(raw);
+      return { host: url.hostname, port: Number(url.port) || fallbackPort || 80 };
+    }
+  } catch {}
+  const withoutPath = raw.split('/')[0];
+  const parts = withoutPath.split(':');
+  if (parts.length === 1) return { host: parts[0], port: fallbackPort || 80 };
+  const port = Number(parts.pop());
+  return { host: parts.join(':'), port: Number.isFinite(port) ? port : (fallbackPort || 80) };
+}
+
+function checkTcp(host, port, timeoutMs = 2000) {
+  return new Promise((resolve) => {
+    if (!host || !port) return resolve({ ok: false, latencyMs: null });
+    const start = Date.now();
+    const socket = new net.Socket();
+    let done = false;
+    const finish = (ok) => {
+      if (done) return;
+      done = true;
+      socket.destroy();
+      resolve({ ok, latencyMs: Date.now() - start });
+    };
+    socket.setTimeout(timeoutMs);
+    socket.once('connect', () => finish(true));
+    socket.once('timeout', () => finish(false));
+    socket.once('error', () => finish(false));
+    socket.connect(port, host);
+  });
+}
+
+async function checkRelayHealth() {
+  if (!RELAY_BASE_URL) return { ok: false, latencyMs: null };
+  const url = `${RELAY_BASE_URL.replace(/\/$/, '')}/healthz`;
+  const controller = new AbortController();
+  const start = Date.now();
+  const timer = setTimeout(() => controller.abort(), 2500);
+  try {
+    const res = await fetch(url, { signal: controller.signal });
+    return { ok: res.ok, latencyMs: Date.now() - start };
+  } catch {
+    return { ok: false, latencyMs: null };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+async function checkCrocRelay() {
+  const relay = getCrocRelaySetting();
+  const parsed = parseHostPort(relay, 9009);
+  if (!parsed) return { ok: false, latencyMs: null };
+  return checkTcp(parsed.host, parsed.port, 2500);
 }
 
 async function relayRequest(pathname, { method = 'GET', body } = {}) {
@@ -626,9 +687,42 @@ function startCrocProcess({
   if (!crocPath) {
     throw new Error('Croc binary not found. Place it in electron/bin.');
   }
+  try {
+    const stat = fs.statSync(crocPath);
+    console.log('[croc] binary', { path: crocPath, mode: stat.mode, size: stat.size });
+  } catch (err) {
+    console.log('[croc] binary stat failed', { path: crocPath, error: err?.message || String(err) });
+  }
 
   const id = crypto.randomBytes(8).toString('hex');
   const args = [];
+
+  if (direction === 'send') {
+    args.push('send');
+    if (code) args.push('--code', code);
+    if (passphrase) args.push('--pass', passphrase);
+    if (relay) args.push('--relay', relay);
+    if (String(process.env.M24_CROC_DEBUG || '').toLowerCase() === '1') {
+      args.push('--debug');
+    }
+    if (overwrite) args.push('--overwrite');
+    if (yes) args.push('--yes');
+    for (const p of paths) {
+      args.push(expandHome(p));
+    }
+  } else {
+    if (relay) args.push('--relay', relay);
+    if (passphrase) args.push('--pass', passphrase);
+    if (String(process.env.M24_CROC_DEBUG || '').toLowerCase() === '1') {
+      args.push('--debug');
+    }
+    if (overwrite) args.push('--overwrite');
+    if (yes) args.push('--yes');
+    if (dest) {
+      args.push('--out', expandHome(dest));
+    }
+    if (code) args.push(code);
+  }
 
   console.log('[croc] start', {
     id,
@@ -637,30 +731,9 @@ function startCrocProcess({
     dest: dest || null,
     relay: relay || null,
     code: code || null,
-    passphrase: passphrase ? 'set' : null
+    passphrase: passphrase ? 'set' : null,
+    args
   });
-
-  if (direction === 'send') {
-    args.push('send');
-    if (code) args.push('--code', code);
-    if (passphrase) args.push('--pass', passphrase);
-    if (relay) args.push('--relay', relay);
-    if (overwrite) args.push('--overwrite');
-    if (yes) args.push('--yes');
-    for (const p of paths) {
-      args.push(expandHome(p));
-    }
-  } else {
-    args.push('receive');
-    if (relay) args.push('--relay', relay);
-    if (passphrase) args.push('--pass', passphrase);
-    if (overwrite) args.push('--overwrite');
-    if (yes) args.push('--yes');
-    if (dest) {
-      args.push('--out', expandHome(dest));
-    }
-    if (code) args.push(code);
-  }
 
   const transfer = updateCrocTransfer(id, {
     id,
@@ -686,12 +759,19 @@ function startCrocProcess({
   };
 
   const proc = spawn(crocPath, args, { env, stdio: ['ignore', 'pipe', 'pipe'] });
+  proc.on('spawn', () => {
+    console.log('[croc] spawned', { id, pid: proc.pid });
+  });
   transfer.pid = proc.pid;
   updateCrocTransfer(id, { status: 'running' });
 
   let codeEmitted = false;
+  let lastStdout = '';
+  let lastStderr = '';
   proc.stdout.on('data', (d) => {
     const line = d.toString();
+    lastStdout = line.slice(-2000);
+    console.log('[croc] stdout', { id, line: line.trim() });
     pushCrocLog(id, line, 'stdout');
     const detected = parseCrocCode(line);
     if (detected && !crocTransfers.get(id)?.code) {
@@ -706,6 +786,8 @@ function startCrocProcess({
 
   proc.stderr.on('data', (d) => {
     const line = d.toString();
+    lastStderr = line.slice(-2000);
+    console.log('[croc] stderr', { id, line: line.trim() });
     pushCrocLog(id, line, 'stderr');
     const detected = parseCrocCode(line);
     if (detected && !crocTransfers.get(id)?.code) {
@@ -719,12 +801,28 @@ function startCrocProcess({
   });
 
   proc.on('error', (err) => {
+    console.log('[croc] spawn error', {
+      id,
+      message: err?.message || String(err),
+      code: err?.code,
+      errno: err?.errno,
+      syscall: err?.syscall,
+      path: err?.path
+    });
     updateCrocTransfer(id, { status: 'error', error: err?.message || String(err) });
   });
 
   proc.on('close', (code, signal) => {
     const transfer = crocTransfers.get(id) || {};
     const status = transfer.cancelled ? 'cancelled' : (code === 0 ? 'completed' : 'failed');
+    console.log('[croc] exit', {
+      id,
+      code,
+      signal,
+      status,
+      lastStdout: lastStdout.trim() || null,
+      lastStderr: lastStderr.trim() || null
+    });
     updateCrocTransfer(id, { status, exitCode: code, signal });
     if (typeof onExit === 'function') {
       try { onExit({ status, exitCode: code, signal }); } catch {}
@@ -759,10 +857,13 @@ async function startShareSend(share) {
     code: shareCode || null,
     paths: pending.paths?.length || 0
   });
-  await relayRequest(`/api/transfers/shares/${share.secretId}/status`, {
+  const statusRes = await relayRequest(`/api/transfers/shares/${share.secretId}/status`, {
     method: 'POST',
     body: { status: 'sending' }
   });
+  if (!statusRes?.ok) {
+    console.log('[transfer] status update failed', { secretId: share.secretId, error: statusRes?.error });
+  }
 
   const transfer = startCrocProcess({
     direction: 'send',
@@ -1239,6 +1340,12 @@ ipcMain.handle('croc:list', async () => {
   };
 });
 
+ipcMain.handle('transfer:status', async () => {
+  const relay = await checkRelayHealth();
+  const croc = await checkCrocRelay();
+  return { ok: true, relay, croc };
+});
+
 ipcMain.handle('croc:cancel', async (_evt, id) => {
   const transfer = crocTransfers.get(id);
   if (!transfer || !transfer.pid) return { ok: false, error: 'Transfer not found.' };
@@ -1276,6 +1383,7 @@ ipcMain.handle('transfer:shareCreate', async (_evt, payload = {}) => {
     if (!res?.ok || !res.share) return { ok: false, error: res?.error || 'share_create_failed' };
     sharePendingBySecret.set(res.share.secretId, { paths, label, maxDownloads, allowBrowser, createdAt: Date.now() });
     broadcastShareEvent({ type: 'share_created', share: res.share });
+    // Wait for receiver readiness before starting sender.
     pollShareForReceiver(res.share.secretId).catch(() => {});
     return { ok: true, share: res.share };
   } catch (err) {
