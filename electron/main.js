@@ -61,6 +61,7 @@ const MAX_CROC_LOGS = 400;
 const sharePendingBySecret = new Map();
 const crocShareByTransfer = new Map();
 const shareReceiveInFlight = new Map();
+const shareRetryBySecret = new Map();
 const pendingDeepLinks = [];
 let relaySocket = null;
 let relayHeartbeat = null;
@@ -187,6 +188,17 @@ function getCrocPassphraseSetting() {
 
 function pendingShareKey(secretId) {
   return secretId ? `transfer_pending_${secretId}` : null;
+}
+
+function retryKey(secretId, direction) {
+  return `${direction}:${secretId}`;
+}
+
+function shouldRetryCrocFailure(message) {
+  const text = String(message || '').toLowerCase();
+  return text.includes('room (secure channel) not ready')
+    || text.includes('could not secure channel')
+    || text.includes('peer disconnected');
 }
 
 function savePendingShare(secretId, pending) {
@@ -890,7 +902,15 @@ function startCrocProcess({
     });
     updateCrocTransfer(id, { status, exitCode: code, signal });
     if (typeof onExit === 'function') {
-      try { onExit({ status, exitCode: code, signal }); } catch {}
+      try {
+        onExit({
+          status,
+          exitCode: code,
+          signal,
+          lastStdout: lastStdout.trim(),
+          lastStderr: lastStderr.trim()
+        });
+      } catch {}
     }
   });
 
@@ -949,12 +969,24 @@ async function startShareSend(share) {
         body: { crocCode: code, crocPassphrase: crocPassphrase || undefined }
       });
     },
-    onExit: async ({ status }) => {
+    onExit: async ({ status, lastStdout, lastStderr }) => {
       await relayRequest(`/api/transfers/shares/${share.secretId}/status`, {
         method: 'POST',
         body: { status }
       });
       if (status !== 'completed') {
+        const reason = lastStdout || lastStderr || '';
+        if (shouldRetryCrocFailure(reason)) {
+          const key = retryKey(share.secretId, 'send');
+          const count = (shareRetryBySecret.get(key) || 0) + 1;
+          shareRetryBySecret.set(key, count);
+          if (count <= 5) {
+            console.log('[transfer] retry send', { secretId: share.secretId, attempt: count });
+            pending.started = false;
+            setTimeout(() => startShareSend(share).catch(() => {}), 2000 * count);
+            return;
+          }
+        }
         await fallbackStartSender(share.secretId);
       }
       clearPendingShare(share.secretId);
@@ -989,11 +1021,24 @@ async function startShareReceive(share) {
     passphrase: crocPassphrase || undefined,
     dest,
     relay: crocRelay || undefined,
-    onExit: async ({ status }) => {
+    onExit: async ({ status, lastStdout, lastStderr }) => {
       await relayRequest(`/api/transfers/shares/${share.secretId}/status`, {
         method: 'POST',
         body: { status }
       });
+      if (status !== 'completed') {
+        const reason = lastStdout || lastStderr || '';
+        if (shouldRetryCrocFailure(reason)) {
+          const key = retryKey(share.secretId, 'receive');
+          const count = (shareRetryBySecret.get(key) || 0) + 1;
+          shareRetryBySecret.set(key, count);
+          if (count <= 5) {
+            console.log('[transfer] retry receive', { secretId: share.secretId, attempt: count });
+            setTimeout(() => startShareReceive(share).catch(() => {}), 2000 * count);
+            return;
+          }
+        }
+      }
       shareReceiveInFlight.delete(share.secretId);
     }
   });
@@ -1048,19 +1093,14 @@ async function handleShareLink(secretId) {
       await startShareReceive(readyRes.share);
     } else {
       if (USE_SHARE_SECRET_AS_CROC_CODE) {
-        // Wait briefly for sender to start before receiving to avoid "room not ready".
-        const waitForSender = async (attempts = 10) => {
-          for (let i = 0; i < attempts; i += 1) {
-            const res = await relayRequest(`/api/transfers/shares/${secretId}`);
-            if (res?.ok && res.share && res.share.status && res.share.status !== 'open') {
-              return res.share;
-            }
-            await new Promise((r) => setTimeout(r, 1000));
+        // Wait for sender status via relay websocket.
+        // Fallback: if no event arrives soon, do a short poll and start anyway.
+        setTimeout(async () => {
+          const res = await relayRequest(`/api/transfers/shares/${secretId}`);
+          if (res?.ok && res.share) {
+            await startShareReceive(res.share);
           }
-          return readyRes.share;
-        };
-        const share = await waitForSender();
-        await startShareReceive(share);
+        }, 8000);
       } else {
         pollShareForCroc(secretId).catch(() => {});
       }
@@ -1145,6 +1185,10 @@ function connectRelaySocket() {
     if (msg.type === 'share_status' && msg.share) {
       console.log('[transfer] status', { secretId: msg.share.secretId, status: msg.share.status });
       broadcastShareEvent({ type: 'share_status', share: msg.share });
+      const deviceId = getRemoteDeviceId();
+      if (msg.share.receiverDeviceId === deviceId && msg.share.status === 'sending') {
+        startShareReceive(msg.share).catch(() => {});
+      }
     }
     if (msg.type === 'share_created' && msg.share) {
       console.log('[transfer] share created', { secretId: msg.share.secretId });
@@ -1499,8 +1543,11 @@ ipcMain.handle('transfer:shareCreate', async (_evt, payload = {}) => {
     sharePendingBySecret.set(res.share.secretId, pending);
     savePendingShare(res.share.secretId, pending);
     broadcastShareEvent({ type: 'share_created', share: res.share });
-    // Wait for receiver readiness before starting sender.
-    pollShareForReceiver(res.share.secretId).catch(() => {});
+    // Wait for receiver readiness via relay websocket.
+    // Fallback: short poll window in case socket missed the event.
+    setTimeout(() => {
+      pollShareForReceiver(res.share.secretId, 5).catch(() => {});
+    }, 8000);
     // Ask all devices to report whether they can serve as a sender fallback.
     startCandidateCheck(res.share.secretId);
     return { ok: true, share: res.share };
