@@ -774,7 +774,7 @@ function startCrocProcess({
 
   if (direction === 'send') {
     args.push('send');
-    if (code) args.push('--code', code);
+    if (classic && code) args.push('--code', code);
     if (zip) args.push('--zip');
     for (const p of paths) {
       args.push(expandHome(p));
