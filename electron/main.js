@@ -135,6 +135,40 @@ function getRelayDeviceName() {
   return getSetting('machine_name') || os.hostname();
 }
 
+async function postCandidate(secretId, hasAccess, priority = 0) {
+  if (!secretId) return;
+  const deviceId = getRemoteDeviceId();
+  await relayRequest(`/api/transfers/shares/${secretId}/candidates`, {
+    method: 'POST',
+    body: { deviceId, hasAccess, priority }
+  });
+}
+
+async function checkShareAccess(secretId) {
+  if (!secretId) return { hasAccess: false };
+  let pending = sharePendingBySecret.get(secretId);
+  if (!pending) {
+    pending = loadPendingShare(secretId) || null;
+    if (pending) sharePendingBySecret.set(secretId, pending);
+  }
+  if (!pending || !pending.paths || !pending.paths.length) {
+    return { hasAccess: false };
+  }
+  for (const p of pending.paths) {
+    const full = expandHome(p);
+    if (!fs.existsSync(full)) return { hasAccess: false };
+  }
+  return { hasAccess: true, pending };
+}
+
+function startCandidateCheck(secretId) {
+  if (!secretId || !relaySocket || relaySocket.readyState !== WebSocket.OPEN) return;
+  const requestId = crypto.randomBytes(8).toString('hex');
+  try {
+    relaySocket.send(JSON.stringify({ type: 'candidate_check', secretId, requestId }));
+  } catch {}
+}
+
 function shouldStartMinimized() {
   const env = String(process.env.M24_START_MINIMIZED || '').toLowerCase();
   if (['1', 'true', 'yes'].includes(env)) return true;
@@ -707,6 +741,7 @@ function startCrocProcess({
   dest,
   relay,
   passphrase,
+  zip = false,
   yes = true,
   overwrite = false,
   onCode,
@@ -725,31 +760,26 @@ function startCrocProcess({
 
   const id = crypto.randomBytes(8).toString('hex');
   const args = [];
+  const classic = String(process.env.M24_CROC_CLASSIC || '1').toLowerCase() !== '0';
+
+  if (relay) args.push('--relay', relay);
+  if (passphrase) args.push('--pass', passphrase);
+  if (classic) args.push('--classic');
+  if (String(process.env.M24_CROC_DEBUG || '').toLowerCase() === '1') {
+    args.push('--debug');
+  }
+  if (overwrite) args.push('--overwrite');
+  if (yes) args.push('--yes');
+  if (dest) args.push('--out', expandHome(dest));
 
   if (direction === 'send') {
     args.push('send');
     if (code) args.push('--code', code);
-    if (passphrase) args.push('--pass', passphrase);
-    if (relay) args.push('--relay', relay);
-    if (String(process.env.M24_CROC_DEBUG || '').toLowerCase() === '1') {
-      args.push('--debug');
-    }
-    if (overwrite) args.push('--overwrite');
-    if (yes) args.push('--yes');
+    if (zip) args.push('--zip');
     for (const p of paths) {
       args.push(expandHome(p));
     }
   } else {
-    if (relay) args.push('--relay', relay);
-    if (passphrase) args.push('--pass', passphrase);
-    if (String(process.env.M24_CROC_DEBUG || '').toLowerCase() === '1') {
-      args.push('--debug');
-    }
-    if (overwrite) args.push('--overwrite');
-    if (yes) args.push('--yes');
-    if (dest) {
-      args.push('--out', expandHome(dest));
-    }
     if (code) args.push(code);
   }
 
@@ -761,6 +791,7 @@ function startCrocProcess({
     relay: relay || null,
     code: code || null,
     passphrase: passphrase ? 'set' : null,
+    zip: Boolean(zip),
     args
   });
 
@@ -905,6 +936,7 @@ async function startShareSend(share) {
     paths: pending.paths || [],
     relay: crocRelay || undefined,
     passphrase: crocPassphrase || undefined,
+    zip: share.receiverDeviceId === 'browser',
     code: shareCode,
     onCode: USE_SHARE_SECRET_AS_CROC_CODE ? undefined : async (code) => {
       await relayRequest(`/api/transfers/shares/${share.secretId}/croc`, {
@@ -917,6 +949,9 @@ async function startShareSend(share) {
         method: 'POST',
         body: { status }
       });
+      if (status !== 'completed') {
+        await fallbackStartSender(share.secretId);
+      }
       clearPendingShare(share.secretId);
     }
   });
@@ -969,6 +1004,18 @@ async function pollShareForReceiver(secretId, attempts = 60) {
       return;
     }
     await new Promise((r) => setTimeout(r, 2000));
+  }
+}
+
+async function fallbackStartSender(secretId) {
+  const res = await relayRequest(`/api/transfers/shares/${secretId}/candidates`);
+  if (!res?.ok || !Array.isArray(res.candidates)) return;
+  const deviceId = getRemoteDeviceId();
+  const candidates = res.candidates.filter((c) => c.has_access && c.device_id !== deviceId);
+  if (!candidates.length) return;
+  const target = candidates[0];
+  if (relaySocket && relaySocket.readyState === WebSocket.OPEN) {
+    relaySocket.send(JSON.stringify({ type: 'start_send', secretId, deviceId: target.device_id }));
   }
 }
 
@@ -1058,6 +1105,20 @@ function connectRelaySocket() {
       console.log('[transfer] receiver ready', { secretId: msg.share.secretId });
       broadcastShareEvent({ type: 'share_receiver_ready', share: msg.share });
       startShareSend(msg.share).catch(() => {});
+    }
+    if (msg.type === 'candidate_check') {
+      const secretId = String(msg.secretId || '').trim();
+      if (!secretId) return;
+      const { hasAccess } = await checkShareAccess(secretId);
+      await postCandidate(secretId, hasAccess, hasAccess ? 5 : 0);
+    }
+    if (msg.type === 'start_send') {
+      const secretId = String(msg.secretId || '').trim();
+      if (!secretId) return;
+      const shareRes = await relayRequest(`/api/transfers/shares/${secretId}`);
+      if (shareRes?.ok && shareRes.share) {
+        startShareSend(shareRes.share).catch(() => {});
+      }
     }
     if (msg.type === 'share_croc_ready' && msg.share) {
       console.log('[transfer] croc ready', { secretId: msg.share.secretId });
@@ -1423,6 +1484,8 @@ ipcMain.handle('transfer:shareCreate', async (_evt, payload = {}) => {
     broadcastShareEvent({ type: 'share_created', share: res.share });
     // Wait for receiver readiness before starting sender.
     pollShareForReceiver(res.share.secretId).catch(() => {});
+    // Ask all devices to report whether they can serve as a sender fallback.
+    startCandidateCheck(res.share.secretId);
     return { ok: true, share: res.share };
   } catch (err) {
     return { ok: false, error: err?.message || String(err) };
