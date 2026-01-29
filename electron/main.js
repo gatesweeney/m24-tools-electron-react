@@ -1,3 +1,16 @@
+function handlePipeError(err) {
+  if (err && err.code === 'EPIPE') return;
+  try { console.error('[electron] stdout/stderr error', err); } catch {}
+}
+
+if (process.stdout) process.stdout.on('error', handlePipeError);
+if (process.stderr) process.stderr.on('error', handlePipeError);
+
+process.on('uncaughtException', (err) => {
+  if (err && err.code === 'EPIPE') return;
+  try { console.error('[electron] uncaught exception', err); } catch {}
+});
+
 console.log('Electron: starting');
 
 require('dotenv').config();
@@ -556,6 +569,47 @@ function parseCrocCode(line) {
   return match ? match[1] : null;
 }
 
+async function statPathRecursive(target) {
+  const info = await fs.promises.stat(target);
+  if (info.isFile()) {
+    return { bytes: info.size, files: 1 };
+  }
+  if (!info.isDirectory()) {
+    return { bytes: 0, files: 0 };
+  }
+  let bytes = 0;
+  let files = 0;
+  const entries = await fs.promises.readdir(target, { withFileTypes: true });
+  for (const entry of entries) {
+    const entryPath = path.join(target, entry.name);
+    if (entry.isFile()) {
+      const stat = await fs.promises.stat(entryPath);
+      bytes += stat.size;
+      files += 1;
+    } else if (entry.isDirectory()) {
+      const nested = await statPathRecursive(entryPath);
+      bytes += nested.bytes;
+      files += nested.files;
+    }
+  }
+  return { bytes, files };
+}
+
+async function getPathsSummary(paths) {
+  let totalBytes = 0;
+  let fileCount = 0;
+  for (const p of paths) {
+    try {
+      const resolved = expandHome(p);
+      const stats = await statPathRecursive(resolved);
+      totalBytes += stats.bytes;
+      fileCount += stats.files;
+    } catch {}
+  }
+  const displayName = paths.length === 1 ? path.basename(paths[0]) : `${paths.length} items`;
+  return { totalBytes, fileCount, displayName };
+}
+
 function startCrocProcess({
   direction,
   paths = [],
@@ -575,6 +629,16 @@ function startCrocProcess({
 
   const id = crypto.randomBytes(8).toString('hex');
   const args = [];
+
+  console.log('[croc] start', {
+    id,
+    direction,
+    paths: paths.length,
+    dest: dest || null,
+    relay: relay || null,
+    code: code || null,
+    passphrase: passphrase ? 'set' : null
+  });
 
   if (direction === 'send') {
     args.push('send');
@@ -688,6 +752,13 @@ async function startShareSend(share) {
   const crocRelay = getCrocRelaySetting();
   const crocPassphrase = getCrocPassphraseSetting();
   const shareCode = USE_SHARE_SECRET_AS_CROC_CODE ? share.secretId : undefined;
+  console.log('[transfer] start send', {
+    secretId: share.secretId,
+    relay: crocRelay || null,
+    passphrase: crocPassphrase ? 'set' : null,
+    code: shareCode || null,
+    paths: pending.paths?.length || 0
+  });
   await relayRequest(`/api/transfers/shares/${share.secretId}/status`, {
     method: 'POST',
     body: { status: 'sending' }
@@ -727,6 +798,13 @@ async function startShareReceive(share) {
     || path.join(os.homedir(), 'Downloads');
   const crocRelay = getCrocRelaySetting();
   const crocPassphrase = share.crocPassphrase || getCrocPassphraseSetting();
+  console.log('[transfer] start receive', {
+    secretId: share.secretId,
+    relay: crocRelay || null,
+    passphrase: crocPassphrase ? 'set' : null,
+    code: shareCode || null,
+    dest
+  });
 
   const transfer = startCrocProcess({
     direction: 'receive',
@@ -840,17 +918,21 @@ function connectRelaySocket() {
     try { msg = JSON.parse(raw.toString()); } catch { return; }
     if (!msg?.type) return;
     if (msg.type === 'share_receiver_ready' && msg.share) {
+      console.log('[transfer] receiver ready', { secretId: msg.share.secretId });
       broadcastShareEvent({ type: 'share_receiver_ready', share: msg.share });
       startShareSend(msg.share).catch(() => {});
     }
     if (msg.type === 'share_croc_ready' && msg.share) {
+      console.log('[transfer] croc ready', { secretId: msg.share.secretId });
       broadcastShareEvent({ type: 'share_croc_ready', share: msg.share });
       startShareReceive(msg.share).catch(() => {});
     }
     if (msg.type === 'share_status' && msg.share) {
+      console.log('[transfer] status', { secretId: msg.share.secretId, status: msg.share.status });
       broadcastShareEvent({ type: 'share_status', share: msg.share });
     }
     if (msg.type === 'share_created' && msg.share) {
+      console.log('[transfer] share created', { secretId: msg.share.secretId });
       broadcastShareEvent({ type: 'share_created', share: msg.share });
     }
   });
@@ -1177,9 +1259,19 @@ ipcMain.handle('transfer:shareCreate', async (_evt, payload = {}) => {
     if (!paths.length) return { ok: false, error: 'No files selected.' };
     const ownerDeviceId = getRemoteDeviceId();
     const ownerName = getRelayDeviceName();
+    const summary = await getPathsSummary(paths);
     const res = await relayRequest('/api/transfers/shares', {
       method: 'POST',
-      body: { ownerDeviceId, ownerName, label, maxDownloads, allowBrowser }
+      body: {
+        ownerDeviceId,
+        ownerName,
+        label,
+        maxDownloads,
+        allowBrowser,
+        totalBytes: summary.totalBytes || 0,
+        fileCount: summary.fileCount || 0,
+        displayName: summary.displayName || null
+      }
     });
     if (!res?.ok || !res.share) return { ok: false, error: res?.error || 'share_create_failed' };
     sharePendingBySecret.set(res.share.secretId, { paths, label, maxDownloads, allowBrowser, createdAt: Date.now() });
