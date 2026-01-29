@@ -185,6 +185,18 @@ function startCandidateCheck(secretId) {
   } catch {}
 }
 
+async function checkPendingSenderSessions() {
+  const deviceId = getRemoteDeviceId();
+  if (!deviceId) return;
+  const res = await relayRequest(`/api/transfers/sessions?ownerDeviceId=${encodeURIComponent(deviceId)}&status=receiver_ready`);
+  if (!res?.ok || !Array.isArray(res.sessions)) return;
+  for (const entry of res.sessions) {
+    if (entry?.share && entry?.session) {
+      startShareSend(entry.share, entry.session).catch(() => {});
+    }
+  }
+}
+
 function shouldStartMinimized() {
   const env = String(process.env.M24_START_MINIMIZED || '').toLowerCase();
   if (['1', 'true', 'yes'].includes(env)) return true;
@@ -1182,6 +1194,9 @@ function connectRelaySocket() {
         }));
       } catch {}
     }, 15000);
+
+    // Fallback: pick up any receiver-ready sessions that arrived while offline.
+    checkPendingSenderSessions().catch(() => {});
   });
 
   relaySocket.on('message', async (raw) => {
