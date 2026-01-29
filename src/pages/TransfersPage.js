@@ -21,6 +21,7 @@ import {
 } from '@mui/material';
 import ContentCopyIcon from '@mui/icons-material/ContentCopy';
 import RefreshIcon from '@mui/icons-material/Refresh';
+import DeleteOutlineIcon from '@mui/icons-material/DeleteOutline';
 
 const DEFAULT_CROC_RELAY = 'relay1.motiontwofour.com:9009';
 const DEFAULT_CROC_PASS = 'jfogtorkwnxjfkrmemwikflglemsjdikfkemwja';
@@ -169,12 +170,24 @@ export default function TransfersPage() {
     />
   );
 
+  const statusChipColor = (status) => {
+    const value = String(status || '').toLowerCase();
+    if (['completed', 'complete', 'done', 'success'].includes(value)) return 'success';
+    if (['failed', 'error', 'cancelled', 'canceled'].includes(value)) return 'error';
+    if (['receiver_ready', 'sending', 'croc_ready'].includes(value)) return 'info';
+    if (['open', 'pending', 'queued'].includes(value)) return 'warning';
+    return 'default';
+  };
+
   const addFiles = async () => {
     setError('');
     if (!window.electronAPI?.selectFiles) return;
     const files = await window.electronAPI.selectFiles();
     if (files && files.length) {
       setSendPaths((prev) => [...prev, ...files]);
+      if (!shareLabel) {
+        setShareLabel(files.length === 1 ? files[0].split('/').pop() : `${files.length} items`);
+      }
     }
   };
 
@@ -184,6 +197,9 @@ export default function TransfersPage() {
     const folder = await window.electronAPI.selectDirectory();
     if (folder) {
       setSendPaths((prev) => [...prev, folder]);
+      if (!shareLabel) {
+        setShareLabel(folder.split('/').pop() || folder);
+      }
     }
   };
 
@@ -279,6 +295,15 @@ export default function TransfersPage() {
     const res = await window.electronAPI?.cancelShare({ secretId: share.secretId });
     if (!res?.ok) {
       setError(res?.error || 'Failed to cancel share.');
+    }
+  };
+
+  const trashShare = async (share) => {
+    const res = await window.electronAPI?.trashShare({ secretId: share.secretId });
+    if (!res?.ok) {
+      setError(res?.error || 'Failed to trash share.');
+    } else {
+      setInfo('Share trashed.');
     }
   };
 
@@ -429,10 +454,14 @@ export default function TransfersPage() {
                   {share.ownerName || share.ownerDeviceId ? (
                     <Chip
                       size="small"
-                      label={`from: ${share.ownerName || share.ownerDeviceId}`}
+                      label={`from: ${(share.ownerName || share.ownerDeviceId).split('.')[0]}`}
                     />
                   ) : null}
-                  <Chip size="small" label={share.status || 'open'} />
+                  <Chip
+                    size="small"
+                    label={share.status || 'open'}
+                    color={statusChipColor(share.status)}
+                  />
                   {share.label ? <Chip size="small" label={share.label} /> : null}
                   {share.secretId ? <Chip size="small" label={`id: ${share.secretId}`} /> : null}
                   {share.maxDownloads != null ? (
@@ -451,6 +480,13 @@ export default function TransfersPage() {
                   {(share.status === 'open' || share.status === 'receiver_ready') && share.ownerDeviceId === deviceId ? (
                     <Button size="small" onClick={() => cancelShare(share)}>Cancel</Button>
                   ) : null}
+                  <Tooltip title="Trash share">
+                    <span>
+                      <IconButton size="small" color="error" onClick={() => trashShare(share)}>
+                        <DeleteOutlineIcon fontSize="inherit" />
+                      </IconButton>
+                    </span>
+                  </Tooltip>
                 </Stack>
                 {share.shareUrl ? (
                   <Typography variant="body2" color="text.secondary">

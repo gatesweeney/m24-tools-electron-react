@@ -820,7 +820,7 @@ function startCrocProcess({
     ].filter(Boolean).join(':')
   };
 
-  if (!classic && direction === 'receive' && code) {
+  if (!classic && code) {
     env.CROC_SECRET = code;
   }
   const proc = spawn(crocPath, args, { env, stdio: ['ignore', 'pipe', 'pipe'] });
@@ -1553,6 +1553,22 @@ ipcMain.handle('transfer:shareCancel', async (_evt, payload = {}) => {
       broadcastShareEvent({ type: 'share_status', share: res.share });
     }
     return res?.ok ? res : { ok: false, error: res?.error || 'share_cancel_failed' };
+  } catch (err) {
+    return { ok: false, error: err?.message || String(err) };
+  }
+});
+
+ipcMain.handle('transfer:shareTrash', async (_evt, payload = {}) => {
+  try {
+    const secretId = parseShareSecretFromLink(payload?.secretId);
+    if (!secretId) return { ok: false, error: 'invalid_share' };
+    const res = await relayRequest(`/api/transfers/shares/${secretId}/trash`, {
+      method: 'POST'
+    });
+    if (res?.ok && res.share) {
+      broadcastShareEvent({ type: 'share_status', share: res.share });
+    }
+    return res?.ok ? res : { ok: false, error: res?.error || 'share_trash_failed' };
   } catch (err) {
     return { ok: false, error: err?.message || String(err) };
   }

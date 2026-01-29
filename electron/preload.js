@@ -34,6 +34,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   listShares: async (payload) => ipcRenderer.invoke('transfer:shareList', payload),
   readyShare: async (payload) => ipcRenderer.invoke('transfer:shareReady', payload),
   cancelShare: async (payload) => ipcRenderer.invoke('transfer:shareCancel', payload),
+  trashShare: async (payload) => ipcRenderer.invoke('transfer:shareTrash', payload),
   onShareEvent: (callback) => {
     const listener = (_event, data) => callback(data);
     ipcRenderer.on('transfer:shareEvent', listener);
