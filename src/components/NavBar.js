@@ -9,6 +9,7 @@ import HomeIcon from '@mui/icons-material/Home';
 
 const pages = [
   { label: 'Home', path: '/' },
+  { label: 'Transfers', path: '/transfers' },
   { label: 'Proxy Tool', path: '/proxy' },
   { label: 'YouTube', path: '/youtube' },
   { label: 'YouTube Simple', path: '/youtube-simple' },

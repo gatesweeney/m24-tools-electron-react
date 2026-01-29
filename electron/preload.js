@@ -4,6 +4,38 @@ contextBridge.exposeInMainWorld('electronAPI', {
   selectDirectory: async () => {
     return await ipcRenderer.invoke('dialog:openDirectory');
   },
+  selectFile: async () => {
+    return await ipcRenderer.invoke('dialog:openFile');
+  },
+  selectFiles: async () => {
+    return await ipcRenderer.invoke('dialog:openFiles');
+  },
+  crocStartSend: async (payload) => {
+    return await ipcRenderer.invoke('croc:send', payload);
+  },
+  crocStartReceive: async (payload) => {
+    return await ipcRenderer.invoke('croc:receive', payload);
+  },
+  crocCancel: async (id) => {
+    return await ipcRenderer.invoke('croc:cancel', id);
+  },
+  crocList: async () => {
+    return await ipcRenderer.invoke('croc:list');
+  },
+  onCrocEvent: (callback) => {
+    const listener = (_event, data) => callback(data);
+    ipcRenderer.on('croc:event', listener);
+    return () => ipcRenderer.removeListener('croc:event', listener);
+  },
+  createShare: async (payload) => ipcRenderer.invoke('transfer:shareCreate', payload),
+  listShares: async (payload) => ipcRenderer.invoke('transfer:shareList', payload),
+  readyShare: async (payload) => ipcRenderer.invoke('transfer:shareReady', payload),
+  cancelShare: async (payload) => ipcRenderer.invoke('transfer:shareCancel', payload),
+  onShareEvent: (callback) => {
+    const listener = (_event, data) => callback(data);
+    ipcRenderer.on('transfer:shareEvent', listener);
+    return () => ipcRenderer.removeListener('transfer:shareEvent', listener);
+  },
   startProxyJob: async (config) => {
     return await ipcRenderer.invoke('proxy:start', config);
   },

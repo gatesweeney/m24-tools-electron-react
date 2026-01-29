@@ -20,6 +20,7 @@ import PlayArrowIcon from '@mui/icons-material/PlayArrow';
 import InfoOutlinedIcon from '@mui/icons-material/InfoOutlined';
 import PhotoLibraryOutlinedIcon from '@mui/icons-material/PhotoLibraryOutlined';
 import EjectOutlinedIcon from '@mui/icons-material/EjectOutlined';
+import ShareOutlinedIcon from '@mui/icons-material/ShareOutlined';
 import Menu from '@mui/material/Menu';
 import ListItemIcon from '@mui/material/ListItemIcon';
 import ListItemText from '@mui/material/ListItemText';
@@ -389,6 +390,16 @@ export default function IndexerPage() {
     return map;
   }, [machineOptions]);
 
+  const openShareModal = (paths, label) => {
+    navigate('/transfers', {
+      state: {
+        openShareModal: true,
+        sharePaths: paths,
+        shareLabel: label
+      }
+    });
+  };
+
   const driveRows = (state.drives || [])
     .filter((d) => machineFilter.length === 0 || machineFilter.includes(d.device_id))
     .map((d, idx) => {
@@ -486,6 +497,17 @@ export default function IndexerPage() {
                     }
                   }
                 });
+                }
+              },
+              {
+                key: 'share',
+                label: 'Share…',
+                icon: <ShareOutlinedIcon fontSize="small" />,
+                disabled: !params.row.mount_point_last,
+                onClick: () => {
+                  const path = params.row.mount_point_last;
+                  const label = params.row.volume_name || path;
+                  openShareModal([path], label);
                 }
               },
               {
@@ -760,6 +782,17 @@ export default function IndexerPage() {
                               }
                             }
                           });
+                          }
+                        },
+                        {
+                          key: 'share',
+                          label: 'Share…',
+                          icon: <ShareOutlinedIcon fontSize="small" />,
+                          disabled: !params.row.path,
+                          onClick: () => {
+                            const path = params.row.path;
+                            const label = params.row.label || path;
+                            openShareModal([path], label);
                           }
                         },
                         {

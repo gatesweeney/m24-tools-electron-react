@@ -10,6 +10,7 @@ import YouTubeSimplePage from './pages/YouTubeSimplePage';
 import IndexerPage from './pages/IndexerPage';
 import SearchPage from './pages/SearchPage';
 import AssetDetailPage from './pages/AssetDetailPage';
+import TransfersPage from './pages/TransfersPage';
 import IndexerProgressStrip from './components/IndexerProgressStrip';
 import UpdateDialog from './components/UpdateDialog';
 
@@ -123,6 +124,7 @@ useEffect(() => {
       <Route path="/indexer" element={<IndexerPage />} />
       <Route path="/search" element={<SearchPage />} />
       <Route path="/detail" element={<AssetDetailPage />} />
+      <Route path="/transfers" element={<TransfersPage />} />
     </Routes>
       <IndexerProgressStrip
         progress={indexerProgress}

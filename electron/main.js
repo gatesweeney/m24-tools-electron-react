@@ -4,6 +4,7 @@ require('dotenv').config();
 
 const { app, BrowserWindow, ipcMain, dialog, Tray, Menu, nativeImage, Notification } = require('electron');
 const { autoUpdater } = require('electron-updater');
+const WebSocket = require('ws');
 const path = require('path');
 const fs = require('fs');
 const shell = require('electron').shell;
@@ -12,6 +13,7 @@ const os = require('os');
 const { runProxyJob } = require('./fs-ops');
 const { getInfoJson, normalizeFormats, downloadWithFormat } = require('./ytdlp');
 const { resolveBin } = require('./binPath');
+const { getBundledBinDir } = require('./binResolver');
 const { startIndexerWorker } = require('./workerLauncher');
 const crypto = require('crypto');
 const { getSetting, setSetting, openSettingsDb } = require('../indexer/worker/db/settingsDb');
@@ -31,15 +33,58 @@ if (!ffprobePath) throw new Error('ffprobe binary missing');
 const ffmpegDir = path.dirname(ffmpegPath);
 
 const isDev = !app.isPackaged;
+const MENUBAR_ONLY = process.platform === 'darwin' && process.env.M24_MENUBAR_ONLY !== '0';
+const AUTO_LAUNCH = process.platform === 'darwin' && !isDev && process.env.M24_AUTO_LAUNCH !== '0';
 let mainWindow;
 
 let tray = null;
 let isQuitting = false;
 let updateInProgress = false;
 let lastUpdateStatus = { status: 'idle', info: null, progress: null, error: null };
+const crocTransfers = new Map();
+const crocLogs = [];
+const MAX_CROC_LOGS = 400;
+const sharePendingBySecret = new Map();
+const crocShareByTransfer = new Map();
+const shareReceiveInFlight = new Map();
+const pendingDeepLinks = [];
+let relaySocket = null;
+let relayHeartbeat = null;
+let relayReconnectTimer = null;
+const gotSingleInstanceLock = app.requestSingleInstanceLock();
 
-const REMOTE_API_URL = 'https://api1.motiontwofour.com';
+if (!gotSingleInstanceLock) {
+  app.quit();
+} else {
+  app.on('second-instance', (_event, argv) => {
+    const urlArg = argv.find((arg) => typeof arg === 'string' && arg.startsWith('m24://'));
+    if (urlArg) {
+      if (app.isReady()) {
+        handleIncomingLink(urlArg);
+      } else {
+        pendingDeepLinks.push(urlArg);
+      }
+    }
+    if (mainWindow) {
+      mainWindow.show();
+      mainWindow.focus();
+    }
+  });
+}
+
+const initialArg = process.argv.find((arg) => typeof arg === 'string' && arg.startsWith('m24://'));
+if (initialArg) {
+  pendingDeepLinks.push(initialArg);
+}
+
+const REMOTE_API_URL = process.env.M24_REMOTE_API_URL || 'https://api1.motiontwofour.com';
 const REMOTE_API_ENABLED = process.env.M24_REMOTE_API_DISABLED !== '1';
+const RELAY_BASE_URL = process.env.M24_RELAY_URL || REMOTE_API_URL;
+const RELAY_WS_URL = process.env.M24_RELAY_WS_URL
+  || (RELAY_BASE_URL ? RELAY_BASE_URL.replace(/^http/i, 'ws') : '');
+const USE_SHARE_SECRET_AS_CROC_CODE = process.env.M24_CROC_USE_SHARE_CODE !== '0';
+const DEFAULT_CROC_RELAY = process.env.M24_CROC_RELAY || 'relay1.motiontwofour.com:9009';
+const DEFAULT_CROC_PASS = process.env.M24_CROC_PASS || 'jfogtorkwnxjfkrmemwikflglemsjdikfkemwja';
 
 async function remoteRequest(pathname, { method = 'GET', body } = {}) {
   if (!REMOTE_API_ENABLED || !REMOTE_API_URL) return { ok: false, error: 'remote_disabled' };
@@ -66,6 +111,61 @@ async function remoteRequest(pathname, { method = 'GET', body } = {}) {
 
 function getRemoteDeviceId() {
   return getSetting('machine_id') || 'local';
+}
+
+function getRelayToken() {
+  return getSetting('remote_api_token') || '';
+}
+
+function getRelayDeviceName() {
+  return getSetting('machine_name') || os.hostname();
+}
+
+function shouldStartMinimized() {
+  const env = String(process.env.M24_START_MINIMIZED || '').toLowerCase();
+  if (['1', 'true', 'yes'].includes(env)) return true;
+  if (['0', 'false', 'no'].includes(env)) return false;
+  const stored = String(getSetting('start_minimized') || '').toLowerCase();
+  return ['1', 'true', 'yes'].includes(stored);
+}
+
+function getCrocRelaySetting() {
+  return getSetting('transfers_croc_relay') || DEFAULT_CROC_RELAY;
+}
+
+function getCrocPassphraseSetting() {
+  return getSetting('transfers_croc_pass') || DEFAULT_CROC_PASS;
+}
+
+function updateDockVisibility() {
+  if (!app.dock) return;
+  const visible = BrowserWindow.getAllWindows().some((win) => win && !win.isDestroyed() && win.isVisible());
+  if (visible) app.dock.show();
+  else app.dock.hide();
+}
+
+async function relayRequest(pathname, { method = 'GET', body } = {}) {
+  if (!RELAY_BASE_URL) return { ok: false, error: 'relay_url_missing' };
+  const url = `${RELAY_BASE_URL}${pathname}`;
+  const headers = {};
+  const token = getRelayToken();
+  if (token) headers.Authorization = `Bearer ${token}`;
+  if (body) headers['Content-Type'] = 'application/json';
+  try {
+    const res = await fetch(url, {
+      method,
+      headers,
+      body: body ? JSON.stringify(body) : undefined
+    });
+    const json = await res.json().catch(() => null);
+    if (!res.ok) {
+      return { ok: false, error: json?.error || `http_${res.status}` };
+    }
+    if (!json) return { ok: false, error: 'invalid_response' };
+    return json;
+  } catch (err) {
+    return { ok: false, error: err?.message || String(err) };
+  }
 }
 
 const VOLUME_FIELDS = [
@@ -391,11 +491,397 @@ onWorkerMessage((msg) => {
   }
 });
 
+function resolveCrocPath() {
+  if (process.env.M24_CROC_PATH) return process.env.M24_CROC_PATH;
+  const platform = process.platform;
+  const arch = process.arch;
+  const candidates = [];
+
+  if (platform === 'darwin') {
+    if (arch === 'arm64') candidates.push('bin/croc-macos-arm64');
+    if (arch === 'x64') candidates.push('bin/croc-macos-x64', 'bin/croc-macos-amd64');
+  } else if (platform === 'win32') {
+    if (arch === 'arm64') candidates.push('bin/croc-win-arm64.exe');
+    candidates.push('bin/croc-win-64.exe', 'bin/croc-win-amd64.exe');
+  } else if (platform === 'linux') {
+    if (arch === 'arm64') candidates.push('bin/croc-linux-arm64');
+    candidates.push('bin/croc-linux-64', 'bin/croc-linux-amd64');
+  }
+
+  for (const rel of candidates) {
+    const resolved = resolveBin(rel);
+    if (resolved) return resolved;
+  }
+
+  try {
+    const { devDir, prodDir } = getBundledBinDir();
+    const dir = app.isPackaged ? prodDir : devDir;
+    const entries = fs.readdirSync(dir);
+    const match = entries.find((name) => name.startsWith('croc'));
+    if (match) {
+      const resolved = resolveBin(path.join('bin', match));
+      if (resolved) return resolved;
+    }
+  } catch {}
+
+  return null;
+}
+
+function broadcastCrocEvent(event) {
+  const windows = BrowserWindow.getAllWindows();
+  for (const win of windows) {
+    if (!win.isDestroyed()) {
+      win.webContents.send('croc:event', event);
+    }
+  }
+}
+
+function pushCrocLog(id, line, stream = 'stdout') {
+  const entry = { id, line, stream, ts: Date.now() };
+  crocLogs.push(entry);
+  if (crocLogs.length > MAX_CROC_LOGS) crocLogs.splice(0, crocLogs.length - MAX_CROC_LOGS);
+  broadcastCrocEvent({ type: 'log', ...entry });
+}
+
+function updateCrocTransfer(id, patch) {
+  const current = crocTransfers.get(id) || { id };
+  const next = { ...current, ...patch, updatedAt: Date.now() };
+  crocTransfers.set(id, next);
+  broadcastCrocEvent({ type: 'transfer', transfer: next });
+  return next;
+}
+
+function parseCrocCode(line) {
+  const match = line.match(/code is:\s*([a-z0-9-]+)/i) || line.match(/code:\s*([a-z0-9-]+)/i);
+  return match ? match[1] : null;
+}
+
+function startCrocProcess({
+  direction,
+  paths = [],
+  code,
+  dest,
+  relay,
+  passphrase,
+  yes = true,
+  overwrite = false,
+  onCode,
+  onExit
+}) {
+  const crocPath = resolveCrocPath();
+  if (!crocPath) {
+    throw new Error('Croc binary not found. Place it in electron/bin.');
+  }
+
+  const id = crypto.randomBytes(8).toString('hex');
+  const args = [];
+
+  if (direction === 'send') {
+    args.push('send');
+    if (code) args.push('--code', code);
+    if (passphrase) args.push('--pass', passphrase);
+    if (relay) args.push('--relay', relay);
+    if (overwrite) args.push('--overwrite');
+    if (yes) args.push('--yes');
+    for (const p of paths) {
+      args.push(expandHome(p));
+    }
+  } else {
+    args.push('receive');
+    if (relay) args.push('--relay', relay);
+    if (passphrase) args.push('--pass', passphrase);
+    if (overwrite) args.push('--overwrite');
+    if (yes) args.push('--yes');
+    if (dest) {
+      args.push('--out', expandHome(dest));
+    }
+    if (code) args.push(code);
+  }
+
+  const transfer = updateCrocTransfer(id, {
+    id,
+    direction,
+    status: 'starting',
+    code: code || null,
+    paths,
+    dest: dest || null,
+    startedAt: Date.now()
+  });
+
+  const env = {
+    ...process.env,
+    PATH: [
+      process.env.PATH || '',
+      '/opt/homebrew/bin',
+      '/usr/local/bin',
+      '/usr/bin',
+      '/bin',
+      '/usr/sbin',
+      '/sbin'
+    ].filter(Boolean).join(':')
+  };
+
+  const proc = spawn(crocPath, args, { env, stdio: ['ignore', 'pipe', 'pipe'] });
+  transfer.pid = proc.pid;
+  updateCrocTransfer(id, { status: 'running' });
+
+  let codeEmitted = false;
+  proc.stdout.on('data', (d) => {
+    const line = d.toString();
+    pushCrocLog(id, line, 'stdout');
+    const detected = parseCrocCode(line);
+    if (detected && !crocTransfers.get(id)?.code) {
+      updateCrocTransfer(id, { code: detected });
+      broadcastCrocEvent({ type: 'code', id, code: detected });
+      if (!codeEmitted && typeof onCode === 'function') {
+        codeEmitted = true;
+        try { onCode(detected); } catch {}
+      }
+    }
+  });
+
+  proc.stderr.on('data', (d) => {
+    const line = d.toString();
+    pushCrocLog(id, line, 'stderr');
+    const detected = parseCrocCode(line);
+    if (detected && !crocTransfers.get(id)?.code) {
+      updateCrocTransfer(id, { code: detected });
+      broadcastCrocEvent({ type: 'code', id, code: detected });
+      if (!codeEmitted && typeof onCode === 'function') {
+        codeEmitted = true;
+        try { onCode(detected); } catch {}
+      }
+    }
+  });
+
+  proc.on('error', (err) => {
+    updateCrocTransfer(id, { status: 'error', error: err?.message || String(err) });
+  });
+
+  proc.on('close', (code, signal) => {
+    const transfer = crocTransfers.get(id) || {};
+    const status = transfer.cancelled ? 'cancelled' : (code === 0 ? 'completed' : 'failed');
+    updateCrocTransfer(id, { status, exitCode: code, signal });
+    if (typeof onExit === 'function') {
+      try { onExit({ status, exitCode: code, signal }); } catch {}
+    }
+  });
+
+  updateCrocTransfer(id, { args });
+  return updateCrocTransfer(id, { status: 'running' });
+}
+
+function broadcastShareEvent(event) {
+  const windows = BrowserWindow.getAllWindows();
+  for (const win of windows) {
+    if (!win.isDestroyed()) {
+      win.webContents.send('transfer:shareEvent', event);
+    }
+  }
+}
+
+async function startShareSend(share) {
+  if (!share?.secretId) return;
+  const pending = sharePendingBySecret.get(share.secretId);
+  if (!pending || pending.started) return;
+  pending.started = true;
+  const crocRelay = getCrocRelaySetting();
+  const crocPassphrase = getCrocPassphraseSetting();
+  const shareCode = USE_SHARE_SECRET_AS_CROC_CODE ? share.secretId : undefined;
+  await relayRequest(`/api/transfers/shares/${share.secretId}/status`, {
+    method: 'POST',
+    body: { status: 'sending' }
+  });
+
+  const transfer = startCrocProcess({
+    direction: 'send',
+    paths: pending.paths || [],
+    relay: crocRelay || undefined,
+    passphrase: crocPassphrase || undefined,
+    code: shareCode,
+    onCode: USE_SHARE_SECRET_AS_CROC_CODE ? undefined : async (code) => {
+      await relayRequest(`/api/transfers/shares/${share.secretId}/croc`, {
+        method: 'POST',
+        body: { crocCode: code, crocPassphrase: crocPassphrase || undefined }
+      });
+    },
+    onExit: async ({ status }) => {
+      await relayRequest(`/api/transfers/shares/${share.secretId}/status`, {
+        method: 'POST',
+        body: { status }
+      });
+    }
+  });
+
+  crocShareByTransfer.set(transfer.id, { secretId: share.secretId, role: 'send' });
+}
+
+async function startShareReceive(share) {
+  if (!share?.secretId) return;
+  const shareCode = share.crocCode || (USE_SHARE_SECRET_AS_CROC_CODE ? share.secretId : null);
+  if (!shareCode) return;
+  if (shareReceiveInFlight.has(share.secretId)) return;
+  shareReceiveInFlight.set(share.secretId, true);
+
+  const dest = getSetting('transfers_download_dir')
+    || path.join(os.homedir(), 'Downloads');
+  const crocRelay = getCrocRelaySetting();
+  const crocPassphrase = share.crocPassphrase || getCrocPassphraseSetting();
+
+  const transfer = startCrocProcess({
+    direction: 'receive',
+    code: shareCode,
+    passphrase: crocPassphrase || undefined,
+    dest,
+    relay: crocRelay || undefined,
+    onExit: async ({ status }) => {
+      await relayRequest(`/api/transfers/shares/${share.secretId}/status`, {
+        method: 'POST',
+        body: { status }
+      });
+      shareReceiveInFlight.delete(share.secretId);
+    }
+  });
+
+  crocShareByTransfer.set(transfer.id, { secretId: share.secretId, role: 'receive' });
+}
+
+async function pollShareForReceiver(secretId, attempts = 60) {
+  for (let i = 0; i < attempts; i += 1) {
+    const res = await relayRequest(`/api/transfers/shares/${secretId}`);
+    if (res?.ok && res.share?.receiverDeviceId) {
+      await startShareSend(res.share);
+      return;
+    }
+    await new Promise((r) => setTimeout(r, 2000));
+  }
+}
+
+async function pollShareForCroc(secretId, attempts = 30) {
+  for (let i = 0; i < attempts; i += 1) {
+    const res = await relayRequest(`/api/transfers/shares/${secretId}`);
+    if (res?.ok && res.share?.crocCode) {
+      await startShareReceive(res.share);
+      return;
+    }
+    await new Promise((r) => setTimeout(r, 2000));
+  }
+}
+
+async function handleShareLink(secretId) {
+  if (!secretId) return;
+  const receiverDeviceId = getRemoteDeviceId();
+  const readyRes = await relayRequest(`/api/transfers/shares/${secretId}/ready`, {
+    method: 'POST',
+    body: { receiverDeviceId }
+  });
+  if (readyRes?.share) {
+    broadcastShareEvent({ type: 'share_ready', share: readyRes.share });
+    if (readyRes.share.crocCode) {
+      await startShareReceive(readyRes.share);
+    } else {
+      if (USE_SHARE_SECRET_AS_CROC_CODE) {
+        await startShareReceive(readyRes.share);
+      } else {
+        pollShareForCroc(secretId).catch(() => {});
+      }
+    }
+  }
+}
+
+function parseShareSecretFromLink(urlOrCode) {
+  if (!urlOrCode) return null;
+  const value = String(urlOrCode).trim();
+  const match = value.match(/share\/(\w+)/i) || value.match(/\/s\/(\w+)/i) || value.match(/^m24:\/\/(?:share\/)?(\w+)/i);
+  if (match) return match[1];
+  if (/^[a-f0-9]{16,}$/i.test(value)) return value;
+  return null;
+}
+
+function handleIncomingLink(url) {
+  const secret = parseShareSecretFromLink(url);
+  if (secret) {
+    handleShareLink(secret).catch(() => {});
+  }
+}
+
+function connectRelaySocket() {
+  const token = getRelayToken();
+  if (!token || !RELAY_WS_URL) return;
+  if (relaySocket && (relaySocket.readyState === WebSocket.OPEN || relaySocket.readyState === WebSocket.CONNECTING)) {
+    return;
+  }
+
+  relaySocket = new WebSocket(RELAY_WS_URL);
+
+  relaySocket.on('open', () => {
+    const deviceId = getRemoteDeviceId();
+    relaySocket.send(JSON.stringify({
+      type: 'register',
+      token,
+      deviceId,
+      name: getRelayDeviceName()
+    }));
+
+    if (relayHeartbeat) clearInterval(relayHeartbeat);
+    relayHeartbeat = setInterval(() => {
+      try {
+        relaySocket.send(JSON.stringify({
+          type: 'heartbeat',
+          token,
+          deviceId
+        }));
+      } catch {}
+    }, 15000);
+  });
+
+  relaySocket.on('message', async (raw) => {
+    let msg;
+    try { msg = JSON.parse(raw.toString()); } catch { return; }
+    if (!msg?.type) return;
+    if (msg.type === 'share_receiver_ready' && msg.share) {
+      broadcastShareEvent({ type: 'share_receiver_ready', share: msg.share });
+      startShareSend(msg.share).catch(() => {});
+    }
+    if (msg.type === 'share_croc_ready' && msg.share) {
+      broadcastShareEvent({ type: 'share_croc_ready', share: msg.share });
+      startShareReceive(msg.share).catch(() => {});
+    }
+    if (msg.type === 'share_status' && msg.share) {
+      broadcastShareEvent({ type: 'share_status', share: msg.share });
+    }
+    if (msg.type === 'share_created' && msg.share) {
+      broadcastShareEvent({ type: 'share_created', share: msg.share });
+    }
+  });
+
+  const scheduleReconnect = () => {
+    if (relayReconnectTimer) return;
+    relayReconnectTimer = setTimeout(() => {
+      relayReconnectTimer = null;
+      connectRelaySocket();
+    }, 5000);
+  };
+
+  relaySocket.on('close', () => {
+    if (relayHeartbeat) clearInterval(relayHeartbeat);
+    relayHeartbeat = null;
+    scheduleReconnect();
+  });
+
+  relaySocket.on('error', () => {
+    scheduleReconnect();
+  });
+}
+
 function createWindow() {
+  const startMinimized = shouldStartMinimized();
   mainWindow = new BrowserWindow({
   width: 1600,
   height: 900,
   backgroundColor: '#121212',
+  show: !startMinimized,
+  skipTaskbar: startMinimized,
   webPreferences: {
     preload: path.join(__dirname, 'preload.js'),
     contextIsolation: true,
@@ -411,7 +897,22 @@ function createWindow() {
     if (process.platform === 'darwin' && !isQuitting) {
       e.preventDefault();
       mainWindow.hide();
+      updateDockVisibility();
     }
+  });
+
+  mainWindow.on('show', () => {
+    mainWindow.setSkipTaskbar(false);
+    updateDockVisibility();
+  });
+
+  mainWindow.on('hide', () => {
+    mainWindow.setSkipTaskbar(true);
+    updateDockVisibility();
+  });
+
+  mainWindow.on('closed', () => {
+    updateDockVisibility();
   });
 
   if (isDev) {
@@ -524,11 +1025,32 @@ function ensureTray() {
 app.whenReady().then(() => {
   app.setName('M24 Tools');
 
+  if (!app.isDefaultProtocolClient('m24')) {
+    try { app.setAsDefaultProtocolClient('m24'); } catch {}
+  }
+
+  app.on('open-url', (event, url) => {
+    event.preventDefault();
+    if (app.isReady()) {
+      handleIncomingLink(url);
+    } else {
+      pendingDeepLinks.push(url);
+    }
+  });
+
+  if (AUTO_LAUNCH && app.setLoginItemSettings) {
+    app.setLoginItemSettings({ openAtLogin: true, openAsHidden: true });
+    console.log('[app] auto-launch enabled');
+  }
+
   setupUpdater();
   createAppMenu();
   createWindow();
 
   ensureTray();
+  connectRelaySocket();
+  setInterval(connectRelaySocket, 30000).unref();
+  updateDockVisibility();
 
   startIndexerWorker();
   getLutsDir();
@@ -546,7 +1068,12 @@ app.whenReady().then(() => {
 
   app.on('activate', function () {
     if (BrowserWindow.getAllWindows().length === 0) createWindow();
+    updateDockVisibility();
   });
+
+  if (pendingDeepLinks.length) {
+    pendingDeepLinks.splice(0).forEach((link) => handleIncomingLink(link));
+  }
 
   app.on('before-quit', () => { isQuitting = true; });
 });
@@ -562,6 +1089,148 @@ ipcMain.handle('dialog:openDirectory', async () => {
   });
   if (result.canceled || !result.filePaths.length) return null;
   return result.filePaths[0];
+});
+
+ipcMain.handle('dialog:openFile', async () => {
+  const result = await dialog.showOpenDialog({
+    properties: ['openFile']
+  });
+  if (result.canceled || !result.filePaths.length) return null;
+  return result.filePaths[0];
+});
+
+ipcMain.handle('dialog:openFiles', async () => {
+  const result = await dialog.showOpenDialog({
+    properties: ['openFile', 'multiSelections']
+  });
+  if (result.canceled || !result.filePaths.length) return [];
+  return result.filePaths;
+});
+
+ipcMain.handle('croc:send', async (_evt, payload = {}) => {
+  try {
+    const { paths = [], code, relay, passphrase, yes = true, overwrite = false } = payload || {};
+    if (!paths.length) return { ok: false, error: 'No paths provided.' };
+    const relayDefault = getCrocRelaySetting();
+    const passDefault = getCrocPassphraseSetting();
+    const transfer = startCrocProcess({
+      direction: 'send',
+      paths,
+      code,
+      relay: relay || relayDefault || undefined,
+      passphrase: passphrase || passDefault || undefined,
+      yes,
+      overwrite
+    });
+    return { ok: true, transfer };
+  } catch (err) {
+    return { ok: false, error: err?.message || String(err) };
+  }
+});
+
+ipcMain.handle('croc:receive', async (_evt, payload = {}) => {
+  try {
+    const { code, dest, relay, passphrase, yes = true, overwrite = false } = payload || {};
+    if (!code) return { ok: false, error: 'Missing code.' };
+    const relayDefault = getCrocRelaySetting();
+    const passDefault = getCrocPassphraseSetting();
+    const transfer = startCrocProcess({
+      direction: 'receive',
+      code,
+      dest,
+      relay: relay || relayDefault || undefined,
+      passphrase: passphrase || passDefault || undefined,
+      yes,
+      overwrite
+    });
+    return { ok: true, transfer };
+  } catch (err) {
+    return { ok: false, error: err?.message || String(err) };
+  }
+});
+
+ipcMain.handle('croc:list', async () => {
+  return {
+    ok: true,
+    transfers: Array.from(crocTransfers.values()),
+    logs: crocLogs
+  };
+});
+
+ipcMain.handle('croc:cancel', async (_evt, id) => {
+  const transfer = crocTransfers.get(id);
+  if (!transfer || !transfer.pid) return { ok: false, error: 'Transfer not found.' };
+  try {
+    updateCrocTransfer(id, { cancelled: true });
+    process.kill(transfer.pid, 'SIGTERM');
+    updateCrocTransfer(id, { status: 'cancelled' });
+    return { ok: true };
+  } catch (err) {
+    return { ok: false, error: err?.message || String(err) };
+  }
+});
+
+ipcMain.handle('transfer:shareCreate', async (_evt, payload = {}) => {
+  try {
+    connectRelaySocket();
+    const { paths = [], label, maxDownloads = 0, allowBrowser = false } = payload || {};
+    if (!paths.length) return { ok: false, error: 'No files selected.' };
+    const ownerDeviceId = getRemoteDeviceId();
+    const ownerName = getRelayDeviceName();
+    const res = await relayRequest('/api/transfers/shares', {
+      method: 'POST',
+      body: { ownerDeviceId, ownerName, label, maxDownloads, allowBrowser }
+    });
+    if (!res?.ok || !res.share) return { ok: false, error: res?.error || 'share_create_failed' };
+    sharePendingBySecret.set(res.share.secretId, { paths, label, maxDownloads, allowBrowser, createdAt: Date.now() });
+    broadcastShareEvent({ type: 'share_created', share: res.share });
+    pollShareForReceiver(res.share.secretId).catch(() => {});
+    return { ok: true, share: res.share };
+  } catch (err) {
+    return { ok: false, error: err?.message || String(err) };
+  }
+});
+
+ipcMain.handle('transfer:shareList', async (_evt, payload = {}) => {
+  try {
+    const { ownerDeviceId, status } = payload || {};
+    const query = new URLSearchParams();
+    if (ownerDeviceId) query.set('ownerDeviceId', ownerDeviceId);
+    if (status) query.set('status', status);
+    const res = await relayRequest(`/api/transfers/shares?${query.toString()}`);
+    return res?.ok ? res : { ok: false, error: res?.error || 'share_list_failed' };
+  } catch (err) {
+    return { ok: false, error: err?.message || String(err) };
+  }
+});
+
+ipcMain.handle('transfer:shareReady', async (_evt, payload = {}) => {
+  try {
+    connectRelaySocket();
+    const secretId = parseShareSecretFromLink(payload?.secretId || payload?.link);
+    if (!secretId) return { ok: false, error: 'invalid_share' };
+    await handleShareLink(secretId);
+    return { ok: true };
+  } catch (err) {
+    return { ok: false, error: err?.message || String(err) };
+  }
+});
+
+ipcMain.handle('transfer:shareCancel', async (_evt, payload = {}) => {
+  try {
+    const secretId = parseShareSecretFromLink(payload?.secretId);
+    if (!secretId) return { ok: false, error: 'invalid_share' };
+    const res = await relayRequest(`/api/transfers/shares/${secretId}/status`, {
+      method: 'POST',
+      body: { status: 'cancelled' }
+    });
+    if (res?.ok && res.share) {
+      broadcastShareEvent({ type: 'share_status', share: res.share });
+    }
+    return res?.ok ? res : { ok: false, error: res?.error || 'share_cancel_failed' };
+  } catch (err) {
+    return { ok: false, error: err?.message || String(err) };
+  }
 });
 
 // IPC: start proxy job
