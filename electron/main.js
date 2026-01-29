@@ -760,7 +760,7 @@ function startCrocProcess({
 
   const id = crypto.randomBytes(8).toString('hex');
   const args = [];
-  const classic = String(process.env.M24_CROC_CLASSIC || '1').toLowerCase() !== '0';
+  const classic = String(process.env.M24_CROC_CLASSIC || '0').toLowerCase() !== '0';
 
   if (relay) args.push('--relay', relay);
   if (passphrase) args.push('--pass', passphrase);
@@ -780,7 +780,9 @@ function startCrocProcess({
       args.push(expandHome(p));
     }
   } else {
-    if (code) args.push(code);
+    if (classic) {
+      if (code) args.push(code);
+    }
   }
 
   console.log('[croc] start', {
@@ -818,6 +820,9 @@ function startCrocProcess({
     ].filter(Boolean).join(':')
   };
 
+  if (!classic && direction === 'receive' && code) {
+    env.CROC_SECRET = code;
+  }
   const proc = spawn(crocPath, args, { env, stdio: ['ignore', 'pipe', 'pipe'] });
   proc.on('spawn', () => {
     console.log('[croc] spawned', { id, pid: proc.pid });
@@ -1043,7 +1048,19 @@ async function handleShareLink(secretId) {
       await startShareReceive(readyRes.share);
     } else {
       if (USE_SHARE_SECRET_AS_CROC_CODE) {
-        await startShareReceive(readyRes.share);
+        // Wait briefly for sender to start before receiving to avoid "room not ready".
+        const waitForSender = async (attempts = 10) => {
+          for (let i = 0; i < attempts; i += 1) {
+            const res = await relayRequest(`/api/transfers/shares/${secretId}`);
+            if (res?.ok && res.share && res.share.status && res.share.status !== 'open') {
+              return res.share;
+            }
+            await new Promise((r) => setTimeout(r, 1000));
+          }
+          return readyRes.share;
+        };
+        const share = await waitForSender();
+        await startShareReceive(share);
       } else {
         pollShareForCroc(secretId).catch(() => {});
       }
