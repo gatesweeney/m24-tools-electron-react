@@ -151,6 +151,35 @@ function getCrocPassphraseSetting() {
   return getSetting('transfers_croc_pass') || DEFAULT_CROC_PASS;
 }
 
+function pendingShareKey(secretId) {
+  return secretId ? `transfer_pending_${secretId}` : null;
+}
+
+function savePendingShare(secretId, pending) {
+  if (!secretId) return;
+  try {
+    setSetting(pendingShareKey(secretId), JSON.stringify(pending || {}));
+  } catch {}
+}
+
+function loadPendingShare(secretId) {
+  if (!secretId) return null;
+  try {
+    const raw = getSetting(pendingShareKey(secretId));
+    if (!raw) return null;
+    return JSON.parse(raw);
+  } catch {
+    return null;
+  }
+}
+
+function clearPendingShare(secretId) {
+  if (!secretId) return;
+  try {
+    setSetting(pendingShareKey(secretId), '');
+  } catch {}
+}
+
 function updateDockVisibility() {
   if (!app.dock) return;
   const visible = BrowserWindow.getAllWindows().some((win) => win && !win.isDestroyed() && win.isVisible());
@@ -844,7 +873,13 @@ function broadcastShareEvent(event) {
 
 async function startShareSend(share) {
   if (!share?.secretId) return;
-  const pending = sharePendingBySecret.get(share.secretId);
+  let pending = sharePendingBySecret.get(share.secretId);
+  if (!pending) {
+    pending = loadPendingShare(share.secretId) || null;
+    if (pending) {
+      sharePendingBySecret.set(share.secretId, pending);
+    }
+  }
   if (!pending || pending.started) return;
   pending.started = true;
   const crocRelay = getCrocRelaySetting();
@@ -882,6 +917,7 @@ async function startShareSend(share) {
         method: 'POST',
         body: { status }
       });
+      clearPendingShare(share.secretId);
     }
   });
 
@@ -1381,7 +1417,9 @@ ipcMain.handle('transfer:shareCreate', async (_evt, payload = {}) => {
       }
     });
     if (!res?.ok || !res.share) return { ok: false, error: res?.error || 'share_create_failed' };
-    sharePendingBySecret.set(res.share.secretId, { paths, label, maxDownloads, allowBrowser, createdAt: Date.now() });
+    const pending = { paths, label, maxDownloads, allowBrowser, createdAt: Date.now() };
+    sharePendingBySecret.set(res.share.secretId, pending);
+    savePendingShare(res.share.secretId, pending);
     broadcastShareEvent({ type: 'share_created', share: res.share });
     // Wait for receiver readiness before starting sender.
     pollShareForReceiver(res.share.secretId).catch(() => {});
@@ -1409,6 +1447,13 @@ ipcMain.handle('transfer:shareReady', async (_evt, payload = {}) => {
     connectRelaySocket();
     const secretId = parseShareSecretFromLink(payload?.secretId || payload?.link);
     if (!secretId) return { ok: false, error: 'invalid_share' };
+    const shareRes = await relayRequest(`/api/transfers/shares/${secretId}`);
+    if (shareRes?.ok && shareRes.share) {
+      const pending = loadPendingShare(secretId);
+      if (pending) {
+        sharePendingBySecret.set(secretId, pending);
+      }
+    }
     await handleShareLink(secretId);
     return { ok: true };
   } catch (err) {
