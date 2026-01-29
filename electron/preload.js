@@ -4,6 +4,9 @@ contextBridge.exposeInMainWorld('electronAPI', {
   selectDirectory: async () => {
     return await ipcRenderer.invoke('dialog:openDirectory');
   },
+  selectDirectories: async () => {
+    return await ipcRenderer.invoke('dialog:openDirectories');
+  },
   selectFile: async () => {
     return await ipcRenderer.invoke('dialog:openFile');
   },

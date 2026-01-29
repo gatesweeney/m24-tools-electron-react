@@ -705,6 +705,23 @@ function parseCrocCode(line) {
   return match ? match[1] : null;
 }
 
+function parseCrocProgress(line) {
+  if (!line) return null;
+  const progressMatch = line.match(/^(.*?)\s+(\d+)%\s+\|.*\(([^)]+)\)/);
+  if (progressMatch) {
+    return {
+      fileName: progressMatch[1].trim(),
+      percent: Number(progressMatch[2]),
+      detail: progressMatch[3].trim()
+    };
+  }
+  const receivingMatch = line.match(/Receiving\s+'([^']+)'/);
+  if (receivingMatch) {
+    return { fileName: receivingMatch[1].trim() };
+  }
+  return null;
+}
+
 async function statPathRecursive(target) {
   const info = await fs.promises.stat(target);
   if (info.isFile()) {
@@ -866,6 +883,14 @@ function startCrocProcess({
     lastStderr = line.slice(-2000);
     console.log('[croc] stderr', { id, line: line.trim() });
     pushCrocLog(id, line, 'stderr');
+    const progress = parseCrocProgress(line);
+    if (progress) {
+      updateCrocTransfer(id, {
+        fileName: progress.fileName || undefined,
+        progressPercent: Number.isFinite(progress.percent) ? progress.percent : undefined,
+        progressDetail: progress.detail || undefined
+      });
+    }
     const detected = parseCrocCode(line);
     if (detected && !crocTransfers.get(id)?.code) {
       updateCrocTransfer(id, { code: detected });
@@ -1426,10 +1451,18 @@ app.on('window-all-closed', function () {
 // IPC: open directory dialog
 ipcMain.handle('dialog:openDirectory', async () => {
   const result = await dialog.showOpenDialog({
-    properties: ['openDirectory']
+    properties: ['openDirectory', 'createDirectory']
   });
   if (result.canceled || !result.filePaths.length) return null;
   return result.filePaths[0];
+});
+
+ipcMain.handle('dialog:openDirectories', async () => {
+  const result = await dialog.showOpenDialog({
+    properties: ['openDirectory', 'multiSelections', 'createDirectory']
+  });
+  if (result.canceled || !result.filePaths.length) return [];
+  return result.filePaths;
 });
 
 ipcMain.handle('dialog:openFile', async () => {

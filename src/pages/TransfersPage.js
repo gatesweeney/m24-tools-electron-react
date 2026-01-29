@@ -6,8 +6,6 @@ import {
   Stack,
   Button,
   TextField,
-  Paper,
-  Divider,
   Chip,
   Alert,
   IconButton,
@@ -17,11 +15,17 @@ import {
   DialogContent,
   DialogActions,
   FormControlLabel,
-  Switch
+  Switch,
+  Snackbar,
+  CircularProgress,
+  LinearProgress
 } from '@mui/material';
 import ContentCopyIcon from '@mui/icons-material/ContentCopy';
 import RefreshIcon from '@mui/icons-material/Refresh';
+import SettingsOutlinedIcon from '@mui/icons-material/SettingsOutlined';
 import DeleteOutlineIcon from '@mui/icons-material/DeleteOutline';
+import CancelOutlinedIcon from '@mui/icons-material/CancelOutlined';
+import { DataGridPro } from '@mui/x-data-grid-pro';
 
 const DEFAULT_CROC_RELAY = 'relay1.motiontwofour.com:9009';
 const DEFAULT_CROC_PASS = 'jfogtorkwnxjfkrmemwikflglemsjdikfkemwja';
@@ -42,8 +46,6 @@ function normalizeShareLink(share) {
 export default function TransfersPage() {
   const location = useLocation();
   const navigate = useNavigate();
-  const [sendPaths, setSendPaths] = useState([]);
-  const [shareLabel, setShareLabel] = useState('');
   const [receiveLink, setReceiveLink] = useState('');
   const [downloadDir, setDownloadDir] = useState('');
   const [crocRelay, setCrocRelay] = useState(DEFAULT_CROC_RELAY);
@@ -53,6 +55,8 @@ export default function TransfersPage() {
   const [deviceId, setDeviceId] = useState('');
   const [relayStatus, setRelayStatus] = useState(null);
   const [crocStatus, setCrocStatus] = useState(null);
+  const [snackbar, setSnackbar] = useState({ open: false, status: 'info', message: '', transfer: null });
+  const [snackbarQueue, setSnackbarQueue] = useState([]);
   const [error, setError] = useState('');
   const [info, setInfo] = useState('');
   const [refreshing, setRefreshing] = useState(false);
@@ -61,6 +65,9 @@ export default function TransfersPage() {
   const [shareModalLabel, setShareModalLabel] = useState('');
   const [shareModalMaxDownloads, setShareModalMaxDownloads] = useState(0);
   const [shareModalAllowBrowser, setShareModalAllowBrowser] = useState(false);
+  const [settingsOpen, setSettingsOpen] = useState(false);
+
+  const formatStatusLabel = (value) => String(value || '').replace(/_/g, ' ').trim();
 
   useEffect(() => {
     let mounted = true;
@@ -124,6 +131,13 @@ export default function TransfersPage() {
     setRefreshing(false);
   };
 
+  const enqueueShareSnackbar = (share, statusOverride) => {
+    const status = statusOverride || share?.status || 'info';
+    const label = share?.label || share?.displayName || share?.secretId || 'share';
+    const message = formatStatusLabel(status) || 'status';
+    setSnackbarQueue((prev) => [...prev, { status, message, label, transfer: null }]);
+  };
+
   useEffect(() => {
     refreshShares();
     let unsub = null;
@@ -135,11 +149,35 @@ export default function TransfersPage() {
             map.set(evt.share.secretId, evt.share);
             return Array.from(map.values()).sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
           });
+          if (evt.type === 'share_receiver_ready' || evt.type === 'share_croc_ready' || evt.type === 'share_status') {
+            enqueueShareSnackbar(evt.share);
+          }
         }
       });
     }
     return () => { if (unsub) unsub(); };
   }, []);
+
+  useEffect(() => {
+    if (!window.electronAPI?.onCrocEvent) return undefined;
+    const unsub = window.electronAPI.onCrocEvent((evt) => {
+      if (evt?.type !== 'transfer' || !evt.transfer) return;
+      const transfer = evt.transfer;
+      const label = transfer.fileName
+        || (transfer.paths?.length ? transfer.paths[0].split('/').pop() : (transfer.code || 'transfer'));
+      const status = transfer.status || 'running';
+      const message = formatStatusLabel(status) || 'transfer';
+      setSnackbarQueue((prev) => [...prev, { status, message, label, transfer }]);
+    });
+    return () => { if (unsub) unsub(); };
+  }, []);
+
+  useEffect(() => {
+    if (snackbar.open || snackbarQueue.length === 0) return;
+    const next = snackbarQueue[0];
+    setSnackbar({ open: true, ...next });
+    setSnackbarQueue((prev) => prev.slice(1));
+  }, [snackbar.open, snackbarQueue]);
 
   useEffect(() => {
     let mounted = true;
@@ -179,28 +217,43 @@ export default function TransfersPage() {
     return 'default';
   };
 
-  const addFiles = async () => {
+  const snackbarColor = (status) => {
+    const value = String(status || '').toLowerCase();
+    if (['completed', 'complete', 'done', 'success'].includes(value)) return '#0e4b2a';
+    if (['failed', 'error', 'cancelled', 'canceled'].includes(value)) return '#4b1010';
+    if (['running', 'starting', 'sending', 'receiving'].includes(value)) return '#202225';
+    return '#2b2f36';
+  };
+
+  const addShareModalFiles = async () => {
     setError('');
     if (!window.electronAPI?.selectFiles) return;
     const files = await window.electronAPI.selectFiles();
     if (files && files.length) {
-      setSendPaths((prev) => [...prev, ...files]);
-      if (!shareLabel) {
-        setShareLabel(files.length === 1 ? files[0].split('/').pop() : `${files.length} items`);
+      setShareModalPaths((prev) => [...prev, ...files]);
+      if (!shareModalLabel) {
+        setShareModalLabel(files.length === 1 ? files[0].split('/').pop() : `${files.length} items`);
       }
     }
   };
 
-  const addFolder = async () => {
+  const addShareModalFolder = async () => {
     setError('');
-    if (!window.electronAPI?.selectDirectory) return;
-    const folder = await window.electronAPI.selectDirectory();
-    if (folder) {
-      setSendPaths((prev) => [...prev, folder]);
-      if (!shareLabel) {
-        setShareLabel(folder.split('/').pop() || folder);
+    const selectDirs = window.electronAPI?.selectDirectories || window.electronAPI?.selectDirectory;
+    if (!selectDirs) return;
+    const folders = await selectDirs();
+    const picked = Array.isArray(folders) ? folders : (folders ? [folders] : []);
+    if (picked.length) {
+      setShareModalPaths((prev) => [...prev, ...picked]);
+      if (!shareModalLabel) {
+        setShareModalLabel(picked.length === 1 ? (picked[0].split('/').pop() || picked[0]) : `${picked.length} folders`);
       }
     }
+  };
+
+  const clearShareModal = () => {
+    setShareModalPaths([]);
+    setShareModalLabel('');
   };
 
   const createShareWithConfig = async ({ paths, label, maxDownloads, allowBrowser }) => {
@@ -222,18 +275,7 @@ export default function TransfersPage() {
     }
     const link = normalizeShareLink(res.share);
     setInfo(link ? `Share link ready: ${link}` : 'Share created.');
-    setSendPaths([]);
-    setShareLabel('');
     refreshShares();
-  };
-
-  const createShare = async () => {
-    await createShareWithConfig({
-      paths: sendPaths,
-      label: shareLabel,
-      maxDownloads: 0,
-      allowBrowser: false
-    });
   };
 
   const handleReceive = async () => {
@@ -307,8 +349,101 @@ export default function TransfersPage() {
     }
   };
 
+  const shareRows = shares
+    .filter((share) => String(share.status || '').toLowerCase() !== 'deleted')
+    .map((share) => ({
+      id: share.secretId,
+      ...share
+    }));
+
+  const shareColumns = [
+    {
+      field: 'status',
+      headerName: 'Status',
+      width: 140,
+      renderCell: (params) => (
+        <Chip
+          size="small"
+          label={params.value || 'open'}
+          color={statusChipColor(params.value)}
+        />
+      )
+    },
+    {
+      field: 'owner',
+      headerName: 'From',
+      minWidth: 140,
+      flex: 0.6,
+      valueGetter: (params) => (params.row.ownerName || params.row.ownerDeviceId || ''),
+      renderCell: (params) => (
+        <Chip
+          size="small"
+          label={`from: ${String(params.value || '').split('.')[0]}`}
+        />
+      )
+    },
+    {
+      field: 'label',
+      headerName: 'Label',
+      minWidth: 160,
+      flex: 1,
+      valueGetter: (params) => params.row.label || params.row.displayName || ''
+    },
+    {
+      field: 'createdAt',
+      headerName: 'Created',
+      minWidth: 180,
+      valueGetter: (params) => params.row.createdAt,
+      valueFormatter: (params) => formatTime(params.value)
+    },
+    {
+      field: 'maxDownloads',
+      headerName: 'Downloads',
+      width: 120,
+      valueFormatter: (params) => (params.value === 0 ? '∞' : params.value)
+    },
+    {
+      field: 'actions',
+      headerName: '',
+      width: 140,
+      sortable: false,
+      filterable: false,
+      renderCell: (params) => {
+        const share = params.row;
+        const canCancel = (share.status === 'open' || share.status === 'receiver_ready') && share.ownerDeviceId === deviceId;
+        return (
+          <Stack direction="row" spacing={0.5}>
+            <Tooltip title="Copy link">
+              <span>
+                <IconButton size="small" onClick={() => copyLink(share)}>
+                  <ContentCopyIcon fontSize="inherit" />
+                </IconButton>
+              </span>
+            </Tooltip>
+            {canCancel ? (
+              <Tooltip title="Cancel share">
+                <span>
+                  <IconButton size="small" onClick={() => cancelShare(share)}>
+                    <CancelOutlinedIcon fontSize="inherit" />
+                  </IconButton>
+                </span>
+              </Tooltip>
+            ) : null}
+            <Tooltip title="Trash share">
+              <span>
+                <IconButton size="small" color="error" onClick={() => trashShare(share)}>
+                  <DeleteOutlineIcon fontSize="inherit" />
+                </IconButton>
+              </span>
+            </Tooltip>
+          </Stack>
+        );
+      }
+    }
+  ];
+
   return (
-    <Box sx={{ display: 'flex', flexDirection: 'column', gap: 3 }}>
+    <Box sx={{ pt: 4, pb: 6, px: { xs: 2, md: 3 }, display: 'flex', flexDirection: 'column', gap: 3 }}>
       <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
         <Box>
           <Typography variant="h4" sx={{ fontWeight: 700, mb: 0.5 }}>
@@ -327,10 +462,29 @@ export default function TransfersPage() {
             {renderStatusDot(crocStatus?.ok)}
             <Typography variant="caption" color="text.secondary">Croc relay</Typography>
           </Stack>
+          <Button
+            variant="contained"
+            onClick={() => {
+              setShareModalOpen(true);
+              setShareModalPaths([]);
+              setShareModalLabel('');
+              setShareModalMaxDownloads(0);
+              setShareModalAllowBrowser(false);
+            }}
+          >
+            Create Share
+          </Button>
           <Tooltip title="Refresh">
             <span>
               <IconButton onClick={refreshShares} disabled={refreshing}>
                 <RefreshIcon />
+              </IconButton>
+            </span>
+          </Tooltip>
+          <Tooltip title="Settings">
+            <span>
+              <IconButton onClick={() => setSettingsOpen(true)}>
+                <SettingsOutlinedIcon />
               </IconButton>
             </span>
           </Tooltip>
@@ -340,88 +494,8 @@ export default function TransfersPage() {
       {error ? <Alert severity="error">{error}</Alert> : null}
       {info ? <Alert severity="success">{info}</Alert> : null}
 
-      <Paper sx={{ p: 2 }}>
-        <Typography variant="h6" sx={{ mb: 1 }}>
-          Settings
-        </Typography>
-        <Stack direction={{ xs: 'column', md: 'row' }} spacing={1} alignItems={{ md: 'center' }}>
-          <TextField
-            label="Download folder"
-            value={downloadDir}
-            onChange={(e) => setDownloadDir(e.target.value)}
-            size="small"
-            sx={{ flex: 1 }}
-          />
-          <Button variant="outlined" onClick={pickDownloadDir}>Choose</Button>
-          <Button variant="contained" onClick={updateDownloadDir}>Save</Button>
-        </Stack>
-        <Box sx={{ mt: 2 }}>
-          <TextField
-            label="Croc relay (optional)"
-            value={crocRelay}
-            onChange={(e) => setCrocRelay(e.target.value)}
-            size="small"
-            fullWidth
-          />
-        </Box>
-        <Box sx={{ mt: 2 }}>
-          <TextField
-            label="Croc relay passphrase"
-            value={crocPassphrase}
-            onChange={(e) => setCrocPassphrase(e.target.value)}
-            size="small"
-            fullWidth
-            type="password"
-          />
-        </Box>
-        <Box sx={{ mt: 2 }}>
-          <FormControlLabel
-            control={(
-              <Switch
-                checked={startMinimized}
-                onChange={(e) => setStartMinimized(e.target.checked)}
-              />
-            )}
-            label="Start minimized in tray"
-          />
-        </Box>
-      </Paper>
-
       <Stack direction={{ xs: 'column', md: 'row' }} spacing={2}>
-        <Paper sx={{ flex: 1, p: 2 }}>
-          <Typography variant="h6" sx={{ mb: 1 }}>
-            Create Share
-          </Typography>
-          <Stack spacing={1.5}>
-            <Stack direction="row" spacing={1}>
-              <Button variant="outlined" onClick={addFiles}>Add Files</Button>
-              <Button variant="outlined" onClick={addFolder}>Add Folder</Button>
-              <Button variant="text" onClick={() => setSendPaths([])}>Clear</Button>
-            </Stack>
-            {sendPaths.length ? (
-              <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 1 }}>
-                {sendPaths.map((p) => (
-                  <Chip key={p} label={p} size="small" />
-                ))}
-              </Box>
-            ) : (
-              <Typography variant="body2" color="text.secondary">
-                No files selected.
-              </Typography>
-            )}
-            <TextField
-              label="Label (optional)"
-              value={shareLabel}
-              onChange={(e) => setShareLabel(e.target.value)}
-              size="small"
-            />
-            <Button variant="contained" onClick={createShare}>
-              Create Link
-            </Button>
-          </Stack>
-        </Paper>
-
-        <Paper sx={{ flex: 1, p: 2 }}>
+        <Box sx={{ flex: 1 }}>
           <Typography variant="h6" sx={{ mb: 1 }}>
             Receive Share
           </Typography>
@@ -436,78 +510,168 @@ export default function TransfersPage() {
               Ready to Receive
             </Button>
           </Stack>
-        </Paper>
+        </Box>
       </Stack>
 
-      <Paper sx={{ p: 2 }}>
+      <Box>
         <Typography variant="h6" sx={{ mb: 1 }}>
           Shares
         </Typography>
-        {shares.length ? (
-          <Stack spacing={1.5}>
-            {shares.map((share) => (
-              <Box key={share.secretId}>
-                <Stack direction="row" spacing={1} alignItems="center" sx={{ mb: 0.5, flexWrap: 'wrap' }}>
-                  <Typography variant="subtitle2" sx={{ textTransform: 'uppercase', letterSpacing: 0.6 }}>
-                    {share.ownerDeviceId === deviceId ? 'SENDER' : 'SHARE'}
-                  </Typography>
-                  {share.ownerName || share.ownerDeviceId ? (
-                    <Chip
-                      size="small"
-                      label={`from: ${(share.ownerName || share.ownerDeviceId).split('.')[0]}`}
-                    />
-                  ) : null}
-                  <Chip
-                    size="small"
-                    label={share.status || 'open'}
-                    color={statusChipColor(share.status)}
-                  />
-                  {share.label ? <Chip size="small" label={share.label} /> : null}
-                  {share.secretId ? <Chip size="small" label={`id: ${share.secretId}`} /> : null}
-                  {share.maxDownloads != null ? (
-                    <Chip
-                      size="small"
-                      label={`downloads: ${share.maxDownloads === 0 ? '∞' : share.maxDownloads}`}
-                    />
-                  ) : null}
-                  {share.allowBrowser ? <Chip size="small" label="browser ok" /> : null}
-                  <Typography variant="caption" color="text.secondary">
-                    {formatTime(share.createdAt)}
-                  </Typography>
-                  <IconButton size="small" onClick={() => copyLink(share)}>
-                    <ContentCopyIcon fontSize="inherit" />
-                  </IconButton>
-                  {(share.status === 'open' || share.status === 'receiver_ready') && share.ownerDeviceId === deviceId ? (
-                    <Button size="small" onClick={() => cancelShare(share)}>Cancel</Button>
-                  ) : null}
-                  <Tooltip title="Trash share">
-                    <span>
-                      <IconButton size="small" color="error" onClick={() => trashShare(share)}>
-                        <DeleteOutlineIcon fontSize="inherit" />
-                      </IconButton>
-                    </span>
-                  </Tooltip>
-                </Stack>
-                {share.shareUrl ? (
-                  <Typography variant="body2" color="text.secondary">
-                    {share.shareUrl}
-                  </Typography>
-                ) : null}
-                <Divider sx={{ mt: 1.5 }} />
-              </Box>
-            ))}
-          </Stack>
+        {shareRows.length ? (
+          <Box sx={{ height: 420 }}>
+            <DataGridPro
+              rows={shareRows}
+              columns={shareColumns}
+              disableRowSelectionOnClick
+              hideFooterSelectedRowCount
+              initialState={{
+                sorting: { sortModel: [{ field: 'createdAt', sort: 'desc' }] }
+              }}
+            />
+          </Box>
         ) : (
           <Typography variant="body2" color="text.secondary">
             No shares yet.
           </Typography>
         )}
-      </Paper>
+      </Box>
 
+      <Snackbar
+        open={snackbar.open}
+        autoHideDuration={4000}
+        onClose={() => setSnackbar((prev) => ({ ...prev, open: false }))}
+        anchorOrigin={{ vertical: 'bottom', horizontal: 'left' }}
+      >
+        <Box
+          sx={{
+            position: 'relative',
+            display: 'flex',
+            alignItems: 'flex-start',
+            gap: 1.25,
+            px: 2,
+            py: 1.25,
+            borderRadius: 1.5,
+            minWidth: 360,
+            bgcolor: snackbarColor(snackbar.status),
+            color: '#e9edf2',
+            boxShadow: 3,
+            overflow: 'hidden'
+          }}
+        >
+          {typeof snackbar.transfer?.progressPercent === 'number' ? (
+            <Box sx={{ position: 'relative', width: 34, height: 34, mt: 0.1 }}>
+              <CircularProgress
+                variant="determinate"
+                value={Math.max(0, Math.min(100, snackbar.transfer.progressPercent))}
+                size={34}
+                thickness={4.5}
+                sx={{ color: '#9ad1ff' }}
+              />
+              <Box
+                sx={{
+                  position: 'absolute',
+                  inset: 0,
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center'
+                }}
+              >
+                <Typography variant="caption" sx={{ color: '#e9edf2', fontWeight: 700 }}>
+                  {Math.round(snackbar.transfer.progressPercent)}%
+                </Typography>
+              </Box>
+            </Box>
+          ) : ['running', 'starting', 'sending', 'receiving'].includes(String(snackbar.status || '').toLowerCase()) ? (
+            <CircularProgress size={16} thickness={5} sx={{ color: '#9ad1ff', mt: 0.3 }} />
+          ) : null}
+          <Box sx={{ flex: 1 }}>
+            <Typography variant="body2" sx={{ fontWeight: 600, mb: 0.5 }}>
+              {snackbar.message}
+            </Typography>
+            {(snackbar.transfer?.fileName || snackbar.label) ? (
+              <Typography variant="caption" sx={{ color: 'rgba(233,237,242,0.75)' }}>
+                {snackbar.transfer?.fileName || snackbar.label}
+              </Typography>
+            ) : null}
+            {snackbar.transfer?.progressDetail ? (
+              <Typography variant="caption" sx={{ color: 'rgba(233,237,242,0.75)' }}>
+                {snackbar.transfer.progressDetail}
+              </Typography>
+            ) : null}
+          </Box>
+          {typeof snackbar.transfer?.progressPercent === 'number' ? (
+            <LinearProgress
+              variant="determinate"
+              value={Math.max(0, Math.min(100, snackbar.transfer.progressPercent))}
+              sx={{
+                position: 'absolute',
+                left: 0,
+                bottom: 0,
+                width: '100%',
+                height: 4,
+                backgroundColor: 'rgba(255,255,255,0.08)',
+                '& .MuiLinearProgress-bar': {
+                  backgroundColor: '#2ecc71'
+                }
+              }}
+            />
+          ) : null}
+        </Box>
+      </Snackbar>
+      <Dialog open={settingsOpen} onClose={() => setSettingsOpen(false)} maxWidth="sm" fullWidth>
+        <DialogTitle>Transfer Settings</DialogTitle>
+        <DialogContent dividers>
+          <Stack spacing={2}>
+            <Stack direction={{ xs: 'column', md: 'row' }} spacing={1} alignItems={{ md: 'center' }}>
+              <TextField
+                label="Download folder"
+                value={downloadDir}
+                onChange={(e) => setDownloadDir(e.target.value)}
+                size="small"
+                sx={{ flex: 1 }}
+              />
+              <Button variant="outlined" onClick={pickDownloadDir}>Choose</Button>
+            </Stack>
+            <TextField
+              label="Croc relay (optional)"
+              value={crocRelay}
+              onChange={(e) => setCrocRelay(e.target.value)}
+              size="small"
+              fullWidth
+            />
+            <TextField
+              label="Croc relay passphrase"
+              value={crocPassphrase}
+              onChange={(e) => setCrocPassphrase(e.target.value)}
+              size="small"
+              fullWidth
+              type="password"
+            />
+            <FormControlLabel
+              control={(
+                <Switch
+                  checked={startMinimized}
+                  onChange={(e) => setStartMinimized(e.target.checked)}
+                />
+              )}
+              label="Start minimized in tray"
+            />
+          </Stack>
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => setSettingsOpen(false)}>Close</Button>
+          <Button variant="contained" onClick={updateDownloadDir}>Save</Button>
+        </DialogActions>
+      </Dialog>
       <Dialog open={shareModalOpen} onClose={() => setShareModalOpen(false)} maxWidth="sm" fullWidth>
         <DialogTitle>Create Share</DialogTitle>
         <DialogContent dividers>
           <Stack spacing={2}>
+            <Stack direction="row" spacing={1}>
+              <Button variant="outlined" onClick={addShareModalFiles}>Add Files</Button>
+              <Button variant="outlined" onClick={addShareModalFolder}>Add Folder</Button>
+              <Button variant="text" onClick={clearShareModal}>Clear</Button>
+            </Stack>
             <TextField
               label="Label"
               value={shareModalLabel}
@@ -516,7 +680,7 @@ export default function TransfersPage() {
               size="small"
             />
             <TextField
-              label="Max downloads (0 = infinite)"
+              label="Max downloads (0 = unlimited)"
               type="number"
               value={shareModalMaxDownloads}
               onChange={(e) => setShareModalMaxDownloads(Number(e.target.value))}
@@ -531,7 +695,7 @@ export default function TransfersPage() {
                   onChange={(e) => setShareModalAllowBrowser(e.target.checked)}
                 />
               )}
-              label="Allow browser download (wire later)"
+              label="Allow browser download"
             />
             <Box>
               <Typography variant="subtitle2" sx={{ mb: 1 }}>
