@@ -25,6 +25,7 @@ import RefreshIcon from '@mui/icons-material/Refresh';
 import SettingsOutlinedIcon from '@mui/icons-material/SettingsOutlined';
 import DeleteOutlineIcon from '@mui/icons-material/DeleteOutline';
 import CancelOutlinedIcon from '@mui/icons-material/CancelOutlined';
+import DownloadOutlinedIcon from '@mui/icons-material/DownloadOutlined';
 import { DataGridPro } from '@mui/x-data-grid-pro';
 
 const DEFAULT_CROC_RELAY = 'relay1.motiontwofour.com:9009';
@@ -296,6 +297,24 @@ export default function TransfersPage() {
     setReceiveLink('');
   };
 
+  const receiveShare = async (share) => {
+    setError('');
+    setInfo('');
+    const link = normalizeShareLink(share) || share?.secretId;
+    if (!link) {
+      setError('Invalid share link.');
+      return;
+    }
+    console.log('[transfer-ui] receive share', { secretId: share?.secretId, link });
+    const res = await window.electronAPI?.readyShare({ secretId: share?.secretId, link });
+    console.log('[transfer-ui] receive share response', res);
+    if (!res?.ok) {
+      setError(res?.error || 'Failed to mark receiver ready.');
+      return;
+    }
+    setInfo('Receiver is ready. Waiting for sender...');
+  };
+
   const updateDownloadDir = async () => {
     if (!window.electronAPI?.setIndexerSetting) return;
     await window.electronAPI.setIndexerSetting('transfers_download_dir', downloadDir || '');
@@ -422,6 +441,15 @@ export default function TransfersPage() {
                 </IconButton>
               </span>
             </Tooltip>
+            {share.ownerDeviceId && deviceId && share.ownerDeviceId !== deviceId ? (
+              <Tooltip title="Download">
+                <span>
+                  <IconButton size="small" onClick={() => receiveShare(share)}>
+                    <DownloadOutlinedIcon fontSize="inherit" />
+                  </IconButton>
+                </span>
+              </Tooltip>
+            ) : null}
             {canCancel ? (
               <Tooltip title="Cancel share">
                 <span>
