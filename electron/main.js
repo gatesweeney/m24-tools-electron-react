@@ -67,6 +67,7 @@ const pendingDeepLinks = [];
 let relaySocket = null;
 let relayHeartbeat = null;
 let relayReconnectTimer = null;
+let relaySessionPollTimer = null;
 const gotSingleInstanceLock = app.requestSingleInstanceLock();
 
 if (!gotSingleInstanceLock) {
@@ -1179,6 +1180,7 @@ function connectRelaySocket() {
 
   relaySocket.on('open', () => {
     const deviceId = getRemoteDeviceId();
+    console.log('[relay] ws open', { deviceId, url: RELAY_WS_URL });
     relaySocket.send(JSON.stringify({
       type: 'register',
       token,
@@ -1199,6 +1201,22 @@ function connectRelaySocket() {
 
     // Fallback: pick up any receiver-ready sessions that arrived while offline.
     checkPendingSenderSessions().catch(() => {});
+    if (relaySessionPollTimer) clearInterval(relaySessionPollTimer);
+    relaySessionPollTimer = setInterval(() => {
+      checkPendingSenderSessions().catch(() => {});
+    }, 30000);
+  });
+
+  relaySocket.on('error', (err) => {
+    console.log('[relay] ws error', { message: err?.message || String(err) });
+  });
+
+  relaySocket.on('close', (code, reason) => {
+    console.log('[relay] ws close', { code, reason: reason?.toString?.() || '' });
+    if (relaySessionPollTimer) {
+      clearInterval(relaySessionPollTimer);
+      relaySessionPollTimer = null;
+    }
   });
 
   relaySocket.on('message', async (raw) => {
