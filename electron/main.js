@@ -1136,10 +1136,12 @@ async function pollSessionForCroc(secretId, sessionId, attempts = 30) {
 async function handleShareLink(secretId) {
   if (!secretId) return;
   const receiverDeviceId = getRemoteDeviceId();
+  console.log('[transfer] receiver ready post', { secretId, receiverDeviceId });
   const readyRes = await relayRequest(`/api/transfers/shares/${secretId}/ready`, {
     method: 'POST',
     body: { receiverDeviceId }
   });
+  console.log('[transfer] receiver ready response', { secretId, ok: readyRes?.ok, error: readyRes?.error, sessionId: readyRes?.session?.sessionId });
   if (readyRes?.share && readyRes?.session) {
     broadcastShareEvent({ type: 'transfer_session_ready', share: readyRes.share, session: readyRes.session });
     if (readyRes.session.crocCode) {
@@ -1634,8 +1636,10 @@ ipcMain.handle('transfer:shareReady', async (_evt, payload = {}) => {
   try {
     connectRelaySocket();
     const secretId = parseShareSecretFromLink(payload?.secretId || payload?.link);
+    console.log('[transfer] shareReady request', { input: payload?.link || payload?.secretId, secretId });
     if (!secretId) return { ok: false, error: 'invalid_share' };
     const shareRes = await relayRequest(`/api/transfers/shares/${secretId}`);
+    console.log('[transfer] shareReady share lookup', { secretId, ok: shareRes?.ok, error: shareRes?.error });
     if (shareRes?.ok && shareRes.share) {
       const pending = loadPendingShare(secretId);
       if (pending) {
@@ -1643,6 +1647,7 @@ ipcMain.handle('transfer:shareReady', async (_evt, payload = {}) => {
       }
     }
     await handleShareLink(secretId);
+    console.log('[transfer] shareReady sent', { secretId });
     return { ok: true };
   } catch (err) {
     return { ok: false, error: err?.message || String(err) };

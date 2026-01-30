@@ -285,7 +285,9 @@ export default function TransfersPage() {
       setError('Paste a share link or secret.');
       return;
     }
+    console.log('[transfer-ui] submit receive', { value: receiveLink.trim() });
     const res = await window.electronAPI?.readyShare({ link: receiveLink.trim() });
+    console.log('[transfer-ui] receive response', res);
     if (!res?.ok) {
       setError(res?.error || 'Failed to mark receiver ready.');
       return;
