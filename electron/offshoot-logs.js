@@ -1,9 +1,10 @@
+// electron/offshoot-logs.js
 const fs = require('fs');
 const fsp = fs.promises;
 const path = require('path');
 
 /**
- * Recursively find OffShoot logs under any "Transfer Logs" folder
+ * Recursively find OffShoot logs under any "Transfer Logs" folder.
  */
 async function findOffshootLogs(rootDir) {
   const logs = [];
@@ -21,7 +22,7 @@ async function findOffshootLogs(rootDir) {
 
       if (entry.isDirectory()) {
         if (entry.name === 'Transfer Logs') {
-          // Collect all .txt logs inside this Transfer Logs folder
+          // Collect all .txt logs inside
           let files;
           try {
             files = await fsp.readdir(entryPath);
@@ -30,11 +31,10 @@ async function findOffshootLogs(rootDir) {
           }
           for (const file of files) {
             if (file.toLowerCase().endsWith('.txt')) {
-              const full = path.join(entryPath, file);
-              logs.push(full);
+              logs.push(path.join(entryPath, file));
             }
           }
-        } else if (!entry.name.startsWith('.')) {
+        } else {
           await walk(entryPath);
         }
       }
@@ -146,8 +146,8 @@ function extractVolumeName(destPath) {
 }
 
 /**
- * Scan for Foolcat "Reports" folders and parse Report Data/report.js
- * Returns a map keyed by reportName (e.g. "A001CV0Z", "CanonB_0008").
+ * Scan for Foolcat "Reports" under any "Reports" folder in rootDir.
+ * Map key: reportName (e.g. "A001CV0Z", "CanonB_0008").
  */
 async function scanFoolcatReports(rootDir) {
   const reports = new Map();
@@ -162,33 +162,32 @@ async function scanFoolcatReports(rootDir) {
 
     for (const entry of entries) {
       const entryPath = path.join(dir, entry.name);
+      if (!entry.isDirectory()) continue;
 
-      if (entry.isDirectory()) {
-        if (entry.name === 'Reports') {
-          // Look for report folders inside "Reports"
-          let reportFolders;
-          try {
-            reportFolders = await fsp.readdir(entryPath, { withFileTypes: true });
-          } catch {
-            continue;
-          }
-
-          for (const rf of reportFolders) {
-            if (!rf.isDirectory()) continue;
-            const reportRoot = path.join(entryPath, rf.name);
-            const reportJs = path.join(reportRoot, 'Report Data', 'report.js');
-            try {
-              const fc = await parseFoolcatReport(reportJs, reportRoot);
-              if (fc && fc.reportName) {
-                reports.set(fc.reportName, fc);
-              }
-            } catch {
-              // ignore broken reports
-            }
-          }
-        } else if (!entry.name.startsWith('.')) {
-          await walk(entryPath);
+      if (entry.name === 'Reports') {
+        // Each subfolder is a report folder - e.g. "Report - A001CV0Z - 2025-11-15 at 23.28.34 - BD_SHUTTLE_B"
+        let rf;
+        try {
+          rf = await fsp.readdir(entryPath, { withFileTypes: true });
+        } catch {
+          continue;
         }
+
+        for (const reportDir of rf) {
+          if (!reportDir.isDirectory()) continue;
+          const reportRoot = path.join(entryPath, reportDir.name);
+          const reportJs = path.join(reportRoot, 'Report Data', 'report.js');
+          try {
+            const data = await parseFoolcatReport(reportJs, reportRoot);
+            if (data && data.reportName) {
+              reports.set(data.reportName, data);
+            }
+          } catch (err) {
+            console.warn('[foolcat] Failed to parse report:', reportJs, err.message || err);
+          }
+        }
+      } else {
+        await walk(entryPath);
       }
     }
   }
@@ -198,7 +197,8 @@ async function scanFoolcatReports(rootDir) {
 }
 
 /**
- * Parse a single Foolcat report.js file.
+ * Parse Foolcat report.js
+ * File shape: "report = { ... };"
  */
 async function parseFoolcatReport(reportJsPath, reportRootDir) {
   let raw;
@@ -219,7 +219,8 @@ async function parseFoolcatReport(reportJsPath, reportRootDir) {
   let data;
   try {
     data = JSON.parse(content);
-  } catch {
+  } catch (err) {
+    console.warn('[foolcat] JSON parse error for', reportJsPath, err.message || err);
     return null;
   }
 
@@ -256,15 +257,15 @@ function normalizeFoolcatClip(media, reportRootDir) {
   let thumbnailPath = null;
 
   if (stills.length > 0) {
-    const index = stills[1] ? 1 : 0; // prefer the second still, fallback to first
-    const relative = decodeURIComponent(stills[index]); // 'Report Data/images/stills/xxx_1.jpg'
+    const index = stills[1] ? 1 : 0; // prefer second still, fallback to first
+    const relativeEncoded = stills[index]; // e.g. "Report%20Data/images/stills/A001C001_..._1.jpg"
+    const relative = decodeURIComponent(relativeEncoded);
     thumbnailPath = path.join(reportRootDir, relative);
   }
 
   const cameraInfo = media.cameraInfo || {};
 
   return {
-    id: media.id || media.fileName || media.clipName,
     clipName: media.clipName,
     fileName: media.fileName,
     fps: media.fps,
@@ -279,24 +280,20 @@ function normalizeFoolcatClip(media, reportRootDir) {
     creationDate: media.creationDate,
     cameraName: cameraInfo.cameraName,
     cameraSerial: cameraInfo.cameraSerial,
-    cameraFirmware: cameraInfo.cameraFirmwareVersion,
-    iso: cameraInfo.iso,
     whiteBalance: cameraInfo.whiteBalance,
     shutterAngle: cameraInfo.shutterAngle,
-    tint: cameraInfo.tint,
+    iso: cameraInfo.iso,
     timecodeStart: cameraInfo.timecodeStart,
-    lensInfo: cameraInfo.lensInfo,
-    audioStreamCount: media.audioStreamCount,
     thumbnailPath
   };
 }
 
 /**
- * Main entry: scan OffShoot logs and join Foolcat reports where available.
+ * Main entry: scan OffShoot logs, attach Foolcat info when available.
  */
 async function scanOffshootLogs(rootFolder) {
   const logPaths = await findOffshootLogs(rootFolder);
-  const fools = await scanFoolcatReports(rootFolder);
+  const reportsByName = await scanFoolcatReports(rootFolder);
 
   const results = [];
 
@@ -304,32 +301,26 @@ async function scanOffshootLogs(rootFolder) {
     try {
       const off = await parseOffshootLog(fullPath);
 
-      const cardKey = off.sourceName || normalizeSource(off.source);
-      const foolcat = cardKey ? fools.get(cardKey) : null;
+      // Use Source Name (best) or strip leading "/" from Source path to match Foolcat reportName
+      const key = off.sourceName || normalizeSourceKey(off.source);
+      const fc = key ? reportsByName.get(key) : null;
 
-      if (foolcat) {
-        off.foolcat = foolcat;
+      if (fc) {
+        off.foolcat = fc;
       }
 
       results.push(off);
     } catch (err) {
-      results.push({
-        id: fullPath,
-        filePath: fullPath,
-        error: err.message || String(err),
-        status: 'Parse Error',
-        transferredFiles: []
-      });
+      console.error('[offshoot] Error parsing log', fullPath, err.message || err);
     }
   }
 
   return results;
 }
 
-function normalizeSource(source) {
+function normalizeSourceKey(source) {
   if (!source) return null;
   const trimmed = source.trim();
-  // source usually looks like "/A001CV0Z" – drop leading slash
   return trimmed.startsWith('/') ? trimmed.slice(1) : trimmed;
 }
 

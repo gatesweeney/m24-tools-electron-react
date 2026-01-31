@@ -4,21 +4,20 @@ import AppBar from '@mui/material/AppBar';
 import Box from '@mui/material/Box';
 import Toolbar from '@mui/material/Toolbar';
 import IconButton from '@mui/material/IconButton';
-import Typography from '@mui/material/Typography';
 import Button from '@mui/material/Button';
 import HomeIcon from '@mui/icons-material/Home';
 
 const pages = [
   { label: 'Home', path: '/' },
+  { label: 'Transfers', path: '/transfers' },
   { label: 'Proxy Tool', path: '/proxy' },
-  { label: 'HEIC Converter', path: '/heic-converter' },
-  { label: 'Image Compressor', path: '/image-compressor' },
-  { label: 'OffShoot Logs', path: '/offshoot-logs' },
+  { label: 'YouTube', path: '/youtube' },
+  { label: 'YouTube Simple', path: '/youtube-simple' },
   { label: 'Indexer', path: '/indexer' },
   { label: 'Search', path: '/search' }
 ];
 
-function NavBar() {
+export default function NavBar() {
   const location = useLocation();
 
     return (
@@ -55,7 +54,7 @@ function NavBar() {
         style={{ height: 28, WebkitAppRegion: 'no-drag', marginRight: 12, pointerEvents: 'none' }}
       />
 </Box>
-        <Box sx={{ display: 'flex', gap: 1 }}>
+        <Box sx={{ display: 'flex', gap: 1, alignItems: 'center' }}>
           {pages.map((page) => {
             const active = location.pathname === page.path;
             return (
@@ -76,5 +75,3 @@ function NavBar() {
     </AppBar>
   );
 }
-
-export default NavBar;

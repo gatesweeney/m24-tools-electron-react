@@ -9,7 +9,6 @@ import ToggleButtonGroup from '@mui/material/ToggleButtonGroup';
 import ToggleButton from '@mui/material/ToggleButton';
 import Snackbar from '@mui/material/Snackbar';
 import Alert from '@mui/material/Alert';
-import Paper from '@mui/material/Paper';
 import Stack from '@mui/material/Stack';
 import { useJob } from '../context/JobContext';
 import { runProxyJob } from '../services/proxyService';

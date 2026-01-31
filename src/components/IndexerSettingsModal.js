@@ -1,0 +1,483 @@
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import Dialog from '@mui/material/Dialog';
+import DialogTitle from '@mui/material/DialogTitle';
+import DialogContent from '@mui/material/DialogContent';
+import DialogActions from '@mui/material/DialogActions';
+import Tabs from '@mui/material/Tabs';
+import Tab from '@mui/material/Tab';
+import Divider from '@mui/material/Divider';
+import Button from '@mui/material/Button';
+import Box from '@mui/material/Box';
+import Stack from '@mui/material/Stack';
+import Typography from '@mui/material/Typography';
+import Alert from '@mui/material/Alert';
+import Switch from '@mui/material/Switch';
+import Tooltip from '@mui/material/Tooltip';
+import IconButton from '@mui/material/IconButton';
+import RefreshIcon from '@mui/icons-material/Refresh';
+import FolderOpenIcon from '@mui/icons-material/FolderOpen';
+import DeleteIcon from '@mui/icons-material/Delete';
+import { DataGridPro, GridToolbar } from '@mui/x-data-grid-pro';
+import { formatBytes, formatDuration, formatDateTime, formatInterval } from '../utils/formatters';
+
+const hasElectron = typeof window !== 'undefined' && !!window.electronAPI;
+
+function ResultChip({ status }) {
+  if (!status) return '—';
+  const map = {
+    success: { label: 'Success', severity: 'success' },
+    cancelled: { label: 'Cancelled', severity: 'warning' },
+    error: { label: 'Error', severity: 'error' }
+  };
+  const cfg = map[status] || { label: status, severity: 'info' };
+  return (
+    <Alert severity={cfg.severity} sx={{ py: 0, px: 1, display: 'inline-flex' }}>
+      {cfg.label}
+    </Alert>
+  );
+}
+
+const DEFAULT_INTERVAL = 20 * 60 * 1000;
+
+const INTERVAL_OPTIONS = [
+  { label: 'On mount only', value: 0 },
+  { label: 'Every 20 min', value: 20 * 60 * 1000 },
+  { label: 'Every 30 min', value: 30 * 60 * 1000 },
+  { label: 'Every 1 hour', value: 60 * 60 * 1000 },
+  { label: 'Every 6 hours', value: 6 * 60 * 60 * 1000 },
+  { label: 'Daily', value: 24 * 60 * 60 * 1000 },
+  { label: 'Manual only', value: -1 }
+];
+
+function intervalLabel(ms) {
+  const hit = INTERVAL_OPTIONS.find((o) => o.value === ms);
+  return hit ? hit.label : formatInterval(ms);
+}
+
+/**
+ * Simple busy counter for async operations.
+ */
+function useBusyIndicator() {
+  const [busyCount, setBusyCount] = useState(0);
+  const begin = useCallback(() => setBusyCount((c) => c + 1), []);
+  const end = useCallback(() => setBusyCount((c) => Math.max(0, c - 1)), []);
+  return { busy: busyCount > 0, begin, end };
+}
+
+export default function IndexerSettingsModal({ open, onClose, onStateChanged }) {
+  const [tab, setTab] = useState(0); // 0=Drives, 1=Manual Roots
+  const [error, setError] = useState(null);
+
+  const [state, setState] = useState({ drives: [], roots: [] });
+
+  const { begin, end } = useBusyIndicator();
+
+  // --- Helpers ---
+  const safeCall = useCallback(async (fn, { setErr = true } = {}) => {
+    if (!hasElectron || !fn) {
+      if (setErr) setError('Missing Electron preload API for this action.');
+      return null;
+    }
+    begin();
+    try {
+      const res = await fn();
+      return res;
+    } catch (e) {
+      if (setErr) setError(e.message || String(e));
+      return null;
+    } finally {
+      end();
+    }
+  }, [begin, end]);
+
+  const loadIndexerState = useCallback(async () => {
+    setError(null);
+    const res = await safeCall(() => window.electronAPI.getIndexerState?.(), { setErr: true });
+    if (!res) return;
+
+    if (!res.ok) {
+      setError(res.error || 'Failed to load indexer state.');
+      return;
+    }
+    const st = res.state || { drives: [], roots: [] };
+    setState(st);
+    onStateChanged && onStateChanged(st);
+  }, [safeCall, onStateChanged]);
+
+  // Load once per open (not repeatedly)
+  useEffect(() => {
+    if (!open) return;
+    loadIndexerState();
+  }, [open, loadIndexerState]);
+
+  // --- Drives actions ---
+  const setVolumeActive = useCallback(async (volumeUuid, isActive, deviceId) => {
+    setError(null);
+    const res = await safeCall(() =>
+      window.electronAPI.indexerSetVolumeActive?.(volumeUuid, isActive, deviceId)
+    );
+    if (!res) return;
+    if (!res.ok) return setError(res.error || 'Failed to update drive.');
+    await loadIndexerState();
+  }, [safeCall, loadIndexerState]);
+
+  const setVolumeInterval = useCallback(async (volumeUuid, intervalMs, deviceId) => {
+    setError(null);
+    const res = await safeCall(() =>
+      window.electronAPI.indexerSetVolumeInterval?.(volumeUuid, intervalMs, deviceId)
+    );
+    if (!res) return;
+    if (!res.ok) return setError(res.error || 'Failed to update interval.');
+    await loadIndexerState();
+  }, [safeCall, loadIndexerState]);
+
+  // --- Manual roots actions ---
+  const addManualRoot = useCallback(async () => {
+    setError(null);
+    if (!window.electronAPI.selectDirectory || !window.electronAPI.indexerAddManualRoot) {
+      return setError('Missing IPC: selectDirectory + indexerAddManualRoot(path)');
+    }
+    begin();
+    try {
+      const dir = await window.electronAPI.selectDirectory();
+      if (!dir) return;
+      const res = await window.electronAPI.indexerAddManualRoot(dir);
+      if (!res.ok) return setError(res.error || 'Failed to add manual root.');
+      const st = res.state || state;
+      setState(st);
+      onStateChanged && onStateChanged(st);
+    } catch (e) {
+      setError(e.message || String(e));
+    } finally {
+      end();
+    }
+  }, [begin, end, state, onStateChanged]);
+
+  const setManualRootActive = useCallback(async (rootId, isActive, deviceId) => {
+    setError(null);
+    const res = await safeCall(() =>
+      window.electronAPI.indexerSetManualRootActive?.(rootId, isActive, deviceId)
+    );
+    if (!res) return;
+    if (!res.ok) return setError(res.error || 'Failed to update manual root.');
+    await loadIndexerState();
+  }, [safeCall, loadIndexerState]);
+
+  const setManualRootInterval = useCallback(async (rootId, intervalMs, deviceId) => {
+    setError(null);
+    const res = await safeCall(() =>
+      window.electronAPI.indexerSetManualRootInterval?.(rootId, intervalMs, deviceId)
+    );
+    if (!res) return;
+    if (!res.ok) return setError(res.error || 'Failed to update manual root interval.');
+    await loadIndexerState();
+  }, [safeCall, loadIndexerState]);
+
+  const removeManualRoot = useCallback(async (rootId, deviceId) => {
+    setError(null);
+    const res = await safeCall(() =>
+      window.electronAPI.indexerRemoveManualRoot?.(rootId, deviceId)
+    );
+    if (!res) return;
+    if (!res.ok) return setError(res.error || 'Failed to remove manual root.');
+    await loadIndexerState();
+  }, [safeCall, loadIndexerState]);
+
+  // --- Derived rows ---
+  const driveRows = useMemo(() => {
+    return (state.drives || []).map((d, idx) => {
+      const baseId = d.volume_uuid || d.id || idx;
+      return {
+        ...d,
+        id: `${d.device_id || 'unknown'}::${baseId}`
+      };
+    });
+  }, [state.drives]);
+
+  const rootRows = useMemo(() => {
+    return (state.roots || []).map((r, idx) => {
+      const baseId = r.root_id || r.id || r.path || idx;
+      return {
+        ...r,
+        id: `${r.device_id || 'unknown'}::${baseId}`,
+        __rootId: baseId
+      };
+    });
+  }, [state.roots]);
+
+  // --- Columns ---
+  const driveColumns = useMemo(() => ([
+    {
+      field: 'is_active',
+      headerName: 'Active',
+      width: 90,
+      sortable: false,
+      renderCell: (params) => (
+        <Switch
+          checked={!!params.row.is_active}
+          size="small"
+          onChange={(e) => setVolumeActive(params.row.volume_uuid, e.target.checked, params.row.device_id)}
+        />
+      )
+    },
+    { field: 'volume_name', headerName: 'Name', flex: 1, minWidth: 180 },
+    {
+      field: 'mount_point_last',
+      headerName: 'Mount',
+      flex: 1.1,
+      minWidth: 220
+    },
+    {
+      field: 'size_bytes',
+      headerName: 'Size',
+      width: 120,
+      valueGetter: (p) => formatBytes(p.row.size_bytes)
+    },
+    {
+      field: 'last_scan_at',
+      headerName: 'Last Scan',
+      width: 180,
+      valueGetter: (p) => formatDateTime(p.row.last_scan_at)
+    },
+    {
+      field: 'last_run_status',
+      headerName: 'Last Result',
+      width: 130,
+      renderCell: (p) => <ResultChip status={p.row.last_run_status} />
+    },
+    {
+      field: 'last_run_duration_ms',
+      headerName: 'Duration',
+      width: 110,
+      valueGetter: (p) => formatDuration(p.row.last_run_duration_ms)
+    },
+    {
+      field: 'scan_interval_ms',
+      headerName: 'Interval',
+      width: 160,
+      renderCell: (params) => (
+        <Button
+          size="small"
+          variant="outlined"
+          onClick={async (e) => {
+            e.stopPropagation();
+            const current = params.row.scan_interval_ms ?? DEFAULT_INTERVAL;
+            const idx = Math.max(0, INTERVAL_OPTIONS.findIndex((o) => o.value === current));
+            const next = INTERVAL_OPTIONS[(idx + 1) % INTERVAL_OPTIONS.length].value;
+            await setVolumeInterval(params.row.volume_uuid, next, params.row.device_id);
+          }}
+        >
+          {intervalLabel(params.row.scan_interval_ms ?? DEFAULT_INTERVAL)}
+        </Button>
+      )
+    },
+    {
+      field: 'volume_uuid',
+      headerName: 'Volume UUID',
+      width: 240
+    },
+    {
+      field: 'actions',
+      headerName: 'Actions',
+      width: 140,
+      sortable: false,
+      filterable: false,
+      renderCell: (params) => (
+        <Stack direction="row" spacing={1}>
+          <Tooltip title="Refresh">
+            <span>
+              <IconButton size="small" onClick={loadIndexerState}>
+                <RefreshIcon fontSize="small" />
+              </IconButton>
+            </span>
+          </Tooltip>
+          <Tooltip title="Reveal in Finder">
+            <span>
+              <IconButton
+                size="small"
+                disabled={!window.electronAPI.openInFinder || !params.row.mount_point_last}
+                onClick={async (e) => {
+                  e.stopPropagation();
+                  await window.electronAPI.openInFinder?.(params.row.mount_point_last);
+                }}
+              >
+                <FolderOpenIcon fontSize="small" />
+              </IconButton>
+            </span>
+          </Tooltip>
+        </Stack>
+      )
+    }
+  ]), [setVolumeActive, setVolumeInterval, loadIndexerState]);
+
+  const rootColumns = useMemo(() => ([
+    {
+      field: 'is_active',
+      headerName: 'Active',
+      width: 90,
+      sortable: false,
+      renderCell: (params) => (
+        <Switch
+          checked={!!params.row.is_active}
+          size="small"
+          onChange={(e) => setManualRootActive(params.row.__rootId || params.row.root_id || params.row.id, e.target.checked, params.row.device_id)}
+        />
+      )
+    },
+    { field: 'label', headerName: 'Label', width: 160, valueGetter: (p) => p.row.label || '—' },
+    { field: 'path', headerName: 'Path', flex: 1.8, minWidth: 320 },
+    {
+      field: 'scan_interval_ms',
+      headerName: 'Interval',
+      width: 160,
+      renderCell: (params) => (
+        <Button
+          size="small"
+          variant="outlined"
+          onClick={async (e) => {
+            e.stopPropagation();
+            const current = params.row.scan_interval_ms ?? DEFAULT_INTERVAL;
+            const idx = Math.max(0, INTERVAL_OPTIONS.findIndex((o) => o.value === current));
+            const next = INTERVAL_OPTIONS[(idx + 1) % INTERVAL_OPTIONS.length].value;
+            await setManualRootInterval(params.row.__rootId || params.row.root_id || params.row.id, next, params.row.device_id);
+          }}
+        >
+          {intervalLabel(params.row.scan_interval_ms ?? DEFAULT_INTERVAL)}
+        </Button>
+      )
+    },
+    {
+      field: 'last_scan_at',
+      headerName: 'Last Scan',
+      width: 180,
+      valueGetter: (p) => formatDateTime(p.row.last_scan_at)
+    },
+    {
+      field: 'last_run_status',
+      headerName: 'Last Result',
+      width: 130,
+      renderCell: (p) => <ResultChip status={p.row.last_run_status} />
+    },
+    {
+      field: 'last_run_duration_ms',
+      headerName: 'Duration',
+      width: 110,
+      valueGetter: (p) => formatDuration(p.row.last_run_duration_ms)
+    },
+    {
+      field: 'actions',
+      headerName: 'Actions',
+      width: 140,
+      sortable: false,
+      filterable: false,
+      renderCell: (params) => (
+        <Stack direction="row" spacing={1}>
+          <Tooltip title="Remove">
+            <span>
+              <IconButton
+                size="small"
+                onClick={async (e) => {
+                  e.stopPropagation();
+                  await removeManualRoot(params.row.__rootId || params.row.root_id || params.row.id, params.row.device_id);
+                }}
+              >
+                <DeleteIcon fontSize="small" />
+              </IconButton>
+            </span>
+          </Tooltip>
+        </Stack>
+      )
+    }
+  ]), [setManualRootActive, setManualRootInterval, removeManualRoot]);
+
+  return (
+    <Dialog
+      open={open}
+      onClose={onClose}
+      maxWidth="xl"
+      fullWidth
+      PaperProps={{ sx: { height: '85vh' } }}
+    >
+      <DialogTitle>Indexer Settings</DialogTitle>
+
+      <DialogContent dividers sx={{ overflow: 'hidden' }}>
+        <Box sx={{ height: '100%', display: 'flex', flexDirection: 'column' }}>
+          <Tabs value={tab} onChange={(_, v) => setTab(v)}>
+            <Tab label="Drives" />
+            <Tab label="Manual Roots" />
+          </Tabs>
+          <Divider sx={{ mb: 1 }} />
+
+          {error && (
+            <Alert severity="error" onClose={() => setError(null)} sx={{ mb: 1 }}>
+              {error}
+            </Alert>
+          )}
+
+          {/* Tab content fills remaining space */}
+          <Box sx={{ flex: 1, minHeight: 0 }}>
+            {tab === 0 && (
+              <Stack spacing={1} sx={{ height: '100%' }}>
+                <Stack direction="row" justifyContent="space-between" alignItems="center">
+                  <Typography variant="subtitle1">Drives</Typography>
+                  <IconButton size="small" onClick={loadIndexerState}>
+                    <RefreshIcon fontSize="small" />
+                  </IconButton>
+                </Stack>
+
+                <Box sx={{ height: '100%', minHeight: 0 }}>
+                  <Box sx={{ height: '100%', width: '100%' }}>
+                    <DataGridPro
+                      rows={driveRows}
+                      columns={driveColumns}
+                      disableRowSelectionOnClick
+                      slots={{ toolbar: GridToolbar }}
+                      slotProps={{
+                        toolbar: { showQuickFilter: true, quickFilterProps: { debounceMs: 300 } }
+                      }}
+                      initialState={{
+                        sorting: { sortModel: [{ field: 'last_scan_at', sort: 'desc' }] }
+                      }}
+                    />
+                  </Box>
+                </Box>
+              </Stack>
+            )}
+
+            {tab === 1 && (
+              <Stack spacing={1} sx={{ height: '100%' }}>
+                <Stack direction="row" justifyContent="space-between" alignItems="center">
+                  <Typography variant="subtitle1">Manual Roots</Typography>
+                  <Button size="small" variant="outlined" onClick={addManualRoot}>
+                    Add Folder
+                  </Button>
+                </Stack>
+
+                <Box sx={{ height: '100%', minHeight: 0 }}>
+                  <Box sx={{ height: '100%', width: '100%' }}>
+                    <DataGridPro
+                      rows={rootRows}
+                      columns={rootColumns}
+                      disableRowSelectionOnClick
+                      slots={{ toolbar: GridToolbar }}
+                      slotProps={{
+                        toolbar: { showQuickFilter: true, quickFilterProps: { debounceMs: 300 } }
+                      }}
+                      initialState={{
+                        sorting: { sortModel: [{ field: 'last_scan_at', sort: 'desc' }] }
+                      }}
+                    />
+                  </Box>
+                </Box>
+              </Stack>
+            )}
+          </Box>
+        </Box>
+      </DialogContent>
+
+      <DialogActions>
+        <Button onClick={onClose}>Close</Button>
+      </DialogActions>
+    </Dialog>
+  );
+}

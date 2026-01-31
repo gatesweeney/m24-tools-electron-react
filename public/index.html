@@ -9,5 +9,57 @@
   <body>
     <noscript>You need to enable JavaScript to run this app.</noscript>
     <div id="root"></div>
+<script>
+(function () {
+  const MATCH_TEXT = 'Missing license key';
+
+  function hideWatermark(node) {
+    if (!node || node.nodeType !== 1) return;
+
+    // Only divs that look exactly like the watermark
+    if (node.tagName !== 'DIV') return;
+
+    const style = node.getAttribute('style') || '';
+    const text = (node.textContent || '').trim();
+
+    const looksLikeWatermark =
+      text.includes(MATCH_TEXT) &&
+      style.includes('position: absolute') &&
+      style.includes('pointer-events: none') &&
+      style.includes('z-index: 100000');
+
+    if (!looksLikeWatermark) return;
+
+    node.style.opacity = '0';
+    node.style.pointerEvents = 'none';
+    node.style.userSelect = 'none';
+    node.style.height = '0';
+    node.style.overflow = 'hidden';
+    node.setAttribute('aria-hidden', 'true');
+  }
+
+  function scan() {
+    document.querySelectorAll('div[style]').forEach(hideWatermark);
+  }
+
+  // Run immediately + on DOM ready
+  scan();
+  document.addEventListener('DOMContentLoaded', scan);
+
+  // Catch portals/modals/lazy injection
+  const obs = new MutationObserver((mutations) => {
+    for (const m of mutations) {
+      for (const n of m.addedNodes) {
+        hideWatermark(n);
+        if (n && n.querySelectorAll) {
+          n.querySelectorAll('div[style]').forEach(hideWatermark);
+        }
+      }
+    }
+  });
+
+  obs.observe(document.documentElement, { childList: true, subtree: true });
+})();
+</script>
   </body>
 </html>
