@@ -48,7 +48,8 @@ function getUnifiedMounts() {
         volume_name: du.volume_name,
         mount_point: du.mount_point,
         size_bytes: du.size_bytes || null,
-        fs_type: du.fs_type || null
+        fs_type: du.fs_type || null,
+        os_internal: du.os_internal === true
       });
     } else {
       // likely network mount or something diskutil doesn't report

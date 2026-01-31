@@ -313,6 +313,59 @@ function startWorker() {
   let mountedVolumeUuids = [];
   let mountedMountPoints = [];
   let latestMounts = [];
+  let availabilityTimer = null;
+
+  const syncVolumeAvailability = async () => {
+    try {
+      const deviceId = getDeviceId();
+      const mountedMap = new Map(
+        latestMounts
+          .filter((m) => m.kind === 'volume')
+          .map((m) => [m.volume_uuid, m])
+      );
+      const knownVolumes = (remoteStateCache.volumes || []).filter((v) => v?.device_id === deviceId);
+      const updates = [];
+
+      for (const v of knownVolumes) {
+        if (!v?.volume_uuid) continue;
+        const mount = mountedMap.get(v.volume_uuid);
+        updates.push({
+          volume_uuid: v.volume_uuid,
+          volume_name: v.volume_name,
+          mount_point_last: mount?.mount_point || v.mount_point_last,
+          last_seen_at: isoNow(),
+          is_available: mount ? 1 : 0,
+          is_active: v.is_active ?? 1,
+          scan_interval_ms: v.scan_interval_ms ?? 20 * 60 * 1000,
+          device_id: deviceId,
+          os_internal: v.os_internal ?? (mount?.os_internal === true)
+        });
+      }
+
+      for (const mount of mountedMap.values()) {
+        if (!knownVolumes.find((v) => v.volume_uuid === mount.volume_uuid)) {
+          updates.push({
+            volume_uuid: mount.volume_uuid,
+            volume_name: mount.volume_name,
+            mount_point_last: mount.mount_point,
+            last_seen_at: isoNow(),
+            is_available: 1,
+            is_active: 1,
+            scan_interval_ms: 20 * 60 * 1000,
+            device_id: deviceId,
+            os_internal: mount.os_internal === true
+          });
+        }
+      }
+
+      if (updates.length) {
+        await upsertState({ deviceId, volumes: updates, manualRoots: [], files: [] });
+        await refreshRemoteState();
+      }
+    } catch (e) {
+      console.error('[indexer] availability sync failed', e?.message || e);
+    }
+  };
 
   triggerManualScan = async ({ type, volumeUuid, rootId, generateThumbs }) => {
     console.log('[indexer]', 'manualScan request', { type, volumeUuid, rootId });
@@ -380,6 +433,7 @@ function startWorker() {
       try {
         await upsertMountedVolumes(mounts);
         await refreshRemoteState();
+        await syncVolumeAvailability();
         const activeSet = new Set(
           (remoteStateCache.volumes || []).filter((v) => v?.is_active !== 0).map((v) => v.volume_uuid)
         );
@@ -393,6 +447,11 @@ function startWorker() {
       }
     })();
   });
+
+  if (availabilityTimer) clearInterval(availabilityTimer);
+  availabilityTimer = setInterval(() => {
+    syncVolumeAvailability().catch(() => {});
+  }, 30000);
 
   watcher.on('mounted', async (mount) => {
     console.log('[mount] mounted', mount.mount_point, mount.volume_name || '');
@@ -411,9 +470,11 @@ function startWorker() {
         volume_name: mount.volume_name,
         mount_point_last: mount.mount_point,
         last_seen_at: isoNow(),
+        is_available: 1,
         is_active: 1,
         scan_interval_ms: 20 * 60 * 1000,
-        device_id: deviceId
+        device_id: deviceId,
+        os_internal: mount.os_internal === true
       };
       await upsertState({ deviceId, volumes: [volumeRecord], manualRoots: [], files: [] });
       await refreshRemoteState();
@@ -439,6 +500,25 @@ function startWorker() {
     latestMounts = latestMounts.filter(m => m.key !== mount.key);
     mountedVolumeUuids = latestMounts.filter(m => m.kind === 'volume').map(m => m.volume_uuid);
     mountedMountPoints = latestMounts.map(m => m.mount_point);
+
+    if (mount.kind === 'volume') {
+      const deviceId = getDeviceId();
+      const existing = (remoteStateCache.volumes || []).find((v) => v.volume_uuid === mount.volume_uuid) || {};
+      const volumeRecord = {
+        volume_uuid: mount.volume_uuid,
+        volume_name: mount.volume_name,
+        mount_point_last: mount.mount_point,
+        last_seen_at: isoNow(),
+        is_available: 0,
+        is_active: existing.is_active ?? 1,
+        scan_interval_ms: existing.scan_interval_ms ?? 20 * 60 * 1000,
+        device_id: deviceId,
+        os_internal: existing.os_internal ?? (mount.os_internal === true)
+      };
+      upsertState({ deviceId, volumes: [volumeRecord], manualRoots: [], files: [] })
+        .then(() => refreshRemoteState())
+        .catch((e) => console.error('[mount] unmount upsert failed', e?.message || e));
+    }
   });
 
   watcher.start();

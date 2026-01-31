@@ -33,9 +33,23 @@ function getDeviceId() {
 
 async function registerDevice(name) {
   const deviceId = getDeviceId();
+  const browseEnabled = getSetting('transfers_browse_enabled') !== '0';
+  const browseMode = getSetting('transfers_browse_mode') || 'indexed';
+  let browseFolders = [];
+  try {
+    browseFolders = JSON.parse(getSetting('transfers_browse_folders') || '[]') || [];
+  } catch {
+    browseFolders = [];
+  }
   return remoteRequest('/api/device/register', {
     method: 'POST',
-    body: { deviceId, name }
+    body: {
+      deviceId,
+      name,
+      browseEnabled,
+      browseMode,
+      browseFolders
+    }
   });
 }
 

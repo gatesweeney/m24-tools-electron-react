@@ -1,9 +1,9 @@
 // indexer/worker/scan/scanRemote.js
-const fs = require('fs');
 const path = require('path');
 const { bfsWalk } = require('./util/bfsWalker');
 const { upsertState, getDeviceId } = require('../remoteApi');
 const crypto = require('crypto');
+const fs = require('fs');
 const { fileThumbTarget, generateFileThumbMid } = require('../tools/thumbs');
 
 function nowIso() {
@@ -229,6 +229,7 @@ async function scanManualRootRemote({ root, cancelToken, progress, generateThumb
         label: root.label || root.path,
         scan_interval_ms: root.scan_interval_ms ?? null,
         is_active: root.is_active ?? 1,
+        is_available: fs.existsSync(root.path) ? 1 : 0,
         device_id: deviceId
       }
     ],
@@ -258,6 +259,7 @@ async function scanManualRootRemote({ root, cancelToken, progress, generateThumb
         file_count: result.fileCount,
         total_bytes: result.totalBytes,
         is_active: root.is_active ?? 1,
+        is_available: fs.existsSync(root.path) ? 1 : 0,
         device_id: deviceId
       }
     ],

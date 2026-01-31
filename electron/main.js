@@ -98,7 +98,19 @@ const REMOTE_API_URL = process.env.M24_REMOTE_API_URL || 'https://api1.motiontwo
 const REMOTE_API_ENABLED = process.env.M24_REMOTE_API_DISABLED !== '1';
 const RELAY_BASE_URL = process.env.M24_RELAY_URL || REMOTE_API_URL;
 const RELAY_WS_URL = process.env.M24_RELAY_WS_URL
-  || (RELAY_BASE_URL ? RELAY_BASE_URL.replace(/^http/i, 'ws') : '');
+  || (() => {
+    if (!RELAY_BASE_URL) return '';
+    try {
+      const url = new URL(RELAY_BASE_URL);
+      url.pathname = '/';
+      url.search = '';
+      url.hash = '';
+      url.protocol = url.protocol.replace('http', 'ws');
+      return url.toString().replace(/\/$/, '');
+    } catch {
+      return RELAY_BASE_URL.replace(/^http/i, 'ws').replace(/\/api\/?.*$/i, '');
+    }
+  })();
 const USE_SHARE_SECRET_AS_CROC_CODE = process.env.M24_CROC_USE_SHARE_CODE === '1';
 const DEFAULT_CROC_RELAY = process.env.M24_CROC_RELAY || 'relay1.motiontwofour.com:9009';
 const DEFAULT_CROC_PASS = process.env.M24_CROC_PASS || 'jfogtorkwnxjfkrmemwikflglemsjdikfkemwja';
@@ -1055,18 +1067,37 @@ async function startShareSend(share, session) {
   crocShareByTransfer.set(transfer.id, { secretId: share.secretId, sessionId, role: 'send' });
 }
 
+const RECEIVE_START_DELAY_MS = 750;
+
+async function refetchSessionForReceive(secretId, sessionId, delayMs = RECEIVE_START_DELAY_MS) {
+  if (!secretId || !sessionId) return null;
+  if (delayMs > 0) {
+    await new Promise((r) => setTimeout(r, delayMs));
+  }
+  const res = await relayRequest(`/api/transfers/shares/${secretId}/sessions/${sessionId}`);
+  if (res?.ok && res.session) {
+    return res.session;
+  }
+  return null;
+}
+
 async function startShareReceive(share, session) {
   if (!share?.secretId || !session?.sessionId) return;
   const sessionId = session.sessionId;
-  const shareCode = session.crocCode || (USE_SHARE_SECRET_AS_CROC_CODE ? share.secretId : null);
-  if (!shareCode) return;
   if (shareReceiveInFlight.has(sessionId)) return;
   shareReceiveInFlight.set(sessionId, true);
+  const latestSession = await refetchSessionForReceive(share.secretId, sessionId);
+  const effectiveSession = latestSession || session;
+  const shareCode = effectiveSession.crocCode || (USE_SHARE_SECRET_AS_CROC_CODE ? share.secretId : null);
+  if (!shareCode) {
+    shareReceiveInFlight.delete(sessionId);
+    return;
+  }
 
   const dest = getSetting('transfers_download_dir')
     || path.join(os.homedir(), 'Downloads');
   const crocRelay = getCrocRelaySetting();
-  const crocPassphrase = session.crocPassphrase || getCrocPassphraseSetting();
+  const crocPassphrase = effectiveSession.crocPassphrase || getCrocPassphraseSetting();
   console.log('[transfer] start receive', {
     secretId: share.secretId,
     sessionId,
@@ -1095,7 +1126,7 @@ async function startShareReceive(share, session) {
           shareRetryBySecret.set(key, count);
           if (count <= 5) {
             console.log('[transfer] retry receive', { secretId: share.secretId, sessionId, attempt: count });
-            setTimeout(() => startShareReceive(share, session).catch(() => {}), 2000 * count);
+            setTimeout(() => startShareReceive(share, effectiveSession).catch(() => {}), 2000 * count);
             return;
           }
         }
@@ -1605,11 +1636,41 @@ ipcMain.handle('croc:cancel', async (_evt, id) => {
 ipcMain.handle('transfer:shareCreate', async (_evt, payload = {}) => {
   try {
     connectRelaySocket();
-    const { paths = [], label, maxDownloads = 0, allowBrowser = false } = payload || {};
+    const {
+      paths = [],
+      label,
+      maxDownloads = 0,
+      allowBrowser = false,
+      ownerDeviceId: ownerDeviceOverride,
+      ownerName: ownerNameOverride,
+      totalBytes: totalBytesOverride,
+      fileCount: fileCountOverride,
+      displayName: displayNameOverride
+    } = payload || {};
     if (!paths.length) return { ok: false, error: 'No files selected.' };
-    const ownerDeviceId = getRemoteDeviceId();
-    const ownerName = getRelayDeviceName();
-    const summary = await getPathsSummary(paths);
+    const ownerDeviceId = ownerDeviceOverride || getRemoteDeviceId();
+    const ownerName = ownerNameOverride || getRelayDeviceName();
+    let summary = {
+      totalBytes: typeof totalBytesOverride === 'number' ? totalBytesOverride : null,
+      fileCount: typeof fileCountOverride === 'number' ? fileCountOverride : null,
+      displayName: displayNameOverride || null
+    };
+    if (summary.totalBytes == null || summary.fileCount == null || !summary.displayName) {
+      try {
+        const computed = await getPathsSummary(paths);
+        summary = {
+          totalBytes: summary.totalBytes ?? computed.totalBytes ?? 0,
+          fileCount: summary.fileCount ?? computed.fileCount ?? 0,
+          displayName: summary.displayName ?? computed.displayName ?? null
+        };
+      } catch {
+        summary = {
+          totalBytes: summary.totalBytes ?? 0,
+          fileCount: summary.fileCount ?? 0,
+          displayName: summary.displayName ?? null
+        };
+      }
+    }
     const res = await relayRequest('/api/transfers/shares', {
       method: 'POST',
       body: {
@@ -1897,6 +1958,33 @@ ipcMain.handle('indexer:getState', async () => {
       return { ok: true, state: { drives: remote.volumes || [], roots: remote.manualRoots || [], devices: remote.devices || [] } };
     }
     return { ok: false, error: remote?.error || 'remote_unavailable' };
+  } catch (e) {
+    return { ok: false, error: e.message || String(e) };
+  }
+});
+
+ipcMain.handle('indexer:updateBrowsePolicy', async (_evt, payload = {}) => {
+  try {
+    const deviceId = getRemoteDeviceId();
+    const name = getRelayDeviceName();
+    const browseEnabled = payload?.browseEnabled ?? (getSetting('transfers_browse_enabled') !== '0');
+    const browseMode = payload?.browseMode || getSetting('transfers_browse_mode') || 'indexed';
+    let browseFolders = payload?.browseFolders;
+    if (!browseFolders) {
+      const raw = getSetting('transfers_browse_folders') || '[]';
+      try { browseFolders = JSON.parse(raw); } catch { browseFolders = []; }
+    }
+    const res = await remoteRequest('/api/device/register', {
+      method: 'POST',
+      body: {
+        deviceId,
+        name,
+        browseEnabled: !!browseEnabled,
+        browseMode,
+        browseFolders: Array.isArray(browseFolders) ? browseFolders : []
+      }
+    });
+    return res?.ok ? { ok: true } : { ok: false, error: res?.error || 'device_register_failed' };
   } catch (e) {
     return { ok: false, error: e.message || String(e) };
   }

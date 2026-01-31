@@ -203,6 +203,7 @@ cancelIndexerKey: async (key) => ipcRenderer.invoke('indexer:cancelKey', key),
 
 getIndexerSetting: (key) => ipcRenderer.invoke('indexer:getSetting', key),
 setIndexerSetting: (key, value) => ipcRenderer.invoke('indexer:setSetting', key, value),
+updateBrowsePolicy: (payload) => ipcRenderer.invoke('indexer:updateBrowsePolicy', payload),
 
 checkFullDiskAccess: () => ipcRenderer.invoke('system:checkFullDiskAccess'),
 openFullDiskAccess: () => ipcRenderer.invoke('system:openFullDiskAccess'),

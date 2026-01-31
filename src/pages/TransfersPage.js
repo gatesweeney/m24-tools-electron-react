@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import {
   Box,
@@ -18,7 +18,13 @@ import {
   Switch,
   Snackbar,
   CircularProgress,
-  LinearProgress
+  LinearProgress,
+  MenuItem,
+  Checkbox,
+  List,
+  ListItem,
+  ListItemButton,
+  ListItemText
 } from '@mui/material';
 import ContentCopyIcon from '@mui/icons-material/ContentCopy';
 import RefreshIcon from '@mui/icons-material/Refresh';
@@ -26,7 +32,9 @@ import SettingsOutlinedIcon from '@mui/icons-material/SettingsOutlined';
 import DeleteOutlineIcon from '@mui/icons-material/DeleteOutline';
 import CancelOutlinedIcon from '@mui/icons-material/CancelOutlined';
 import DownloadOutlinedIcon from '@mui/icons-material/DownloadOutlined';
+import ShareOutlinedIcon from '@mui/icons-material/ShareOutlined';
 import { DataGridPro } from '@mui/x-data-grid-pro';
+import { formatBytes } from '../utils/formatters';
 
 const DEFAULT_CROC_RELAY = 'relay1.motiontwofour.com:9009';
 const DEFAULT_CROC_PASS = 'jfogtorkwnxjfkrmemwikflglemsjdikfkemwja';
@@ -52,6 +60,9 @@ export default function TransfersPage() {
   const [crocRelay, setCrocRelay] = useState(DEFAULT_CROC_RELAY);
   const [crocPassphrase, setCrocPassphrase] = useState(DEFAULT_CROC_PASS);
   const [startMinimized, setStartMinimized] = useState(false);
+  const [browseEnabled, setBrowseEnabled] = useState(true);
+  const [browseMode, setBrowseMode] = useState('indexed');
+  const [browseFolders, setBrowseFolders] = useState([]);
   const [shares, setShares] = useState([]);
   const [deviceId, setDeviceId] = useState('');
   const [relayStatus, setRelayStatus] = useState(null);
@@ -66,7 +77,28 @@ export default function TransfersPage() {
   const [shareModalLabel, setShareModalLabel] = useState('');
   const [shareModalMaxDownloads, setShareModalMaxDownloads] = useState(0);
   const [shareModalAllowBrowser, setShareModalAllowBrowser] = useState(false);
+  const [shareModalOwnerDeviceId, setShareModalOwnerDeviceId] = useState('');
+  const [shareModalOwnerName, setShareModalOwnerName] = useState('');
+  const [shareModalDisplayName, setShareModalDisplayName] = useState('');
+  const [shareModalFileCount, setShareModalFileCount] = useState(null);
+  const [shareModalTotalBytes, setShareModalTotalBytes] = useState(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [remoteState, setRemoteState] = useState({ drives: [], roots: [], devices: [] });
+  const [deviceListError, setDeviceListError] = useState('');
+  const [selectedDeviceId, setSelectedDeviceId] = useState('');
+  const [selectedDeviceName, setSelectedDeviceName] = useState('');
+  const [deviceRoots, setDeviceRoots] = useState([]);
+  const [selectedRoot, setSelectedRoot] = useState(null);
+  const [remoteDirRel, setRemoteDirRel] = useState('');
+  const [remoteEntries, setRemoteEntries] = useState([]);
+  const [remoteDirCache, setRemoteDirCache] = useState({});
+  const [remoteHistory, setRemoteHistory] = useState([]);
+  const [remoteHistoryIndex, setRemoteHistoryIndex] = useState(-1);
+  const [browseModalOpen, setBrowseModalOpen] = useState(false);
+  const [remoteSelection, setRemoteSelection] = useState([]);
+  const [metaEntry, setMetaEntry] = useState(null);
+  const [remoteLoading, setRemoteLoading] = useState(false);
+  const [remoteError, setRemoteError] = useState('');
 
   const formatStatusLabel = (value) => String(value || '').replace(/_/g, ' ').trim();
 
@@ -88,6 +120,11 @@ export default function TransfersPage() {
       setShareModalLabel(location.state.shareLabel || '');
       setShareModalMaxDownloads(0);
       setShareModalAllowBrowser(false);
+      setShareModalOwnerDeviceId('');
+      setShareModalOwnerName('');
+      setShareModalDisplayName('');
+      setShareModalFileCount(null);
+      setShareModalTotalBytes(null);
       navigate(location.pathname, { replace: true, state: {} });
     }
   }, [location, navigate]);
@@ -111,6 +148,24 @@ export default function TransfersPage() {
         const normalized = String(startRes.value).toLowerCase();
         setStartMinimized(['1', 'true', 'yes'].includes(normalized));
       }
+      const browseEnabledRes = await window.electronAPI.getIndexerSetting('transfers_browse_enabled');
+      if (mounted && browseEnabledRes?.ok) {
+        const normalized = String(browseEnabledRes.value ?? '1').toLowerCase();
+        setBrowseEnabled(!['0', 'false', 'no'].includes(normalized));
+      }
+      const browseModeRes = await window.electronAPI.getIndexerSetting('transfers_browse_mode');
+      if (mounted && browseModeRes?.ok && browseModeRes.value) {
+        setBrowseMode(String(browseModeRes.value));
+      }
+      const browseFoldersRes = await window.electronAPI.getIndexerSetting('transfers_browse_folders');
+      if (mounted && browseFoldersRes?.ok && browseFoldersRes.value != null) {
+        try {
+          const parsed = JSON.parse(browseFoldersRes.value);
+          setBrowseFolders(Array.isArray(parsed) ? parsed : []);
+        } catch {
+          setBrowseFolders([]);
+        }
+      }
     };
     loadSettings();
     return () => { mounted = false; };
@@ -132,6 +187,18 @@ export default function TransfersPage() {
     setRefreshing(false);
   };
 
+  const refreshDeviceState = async () => {
+    if (!window.electronAPI?.getIndexerState) return;
+    const res = await window.electronAPI.getIndexerState();
+    if (res?.ok) {
+      const nextState = res.state || { drives: [], roots: [], devices: [] };
+      setRemoteState(nextState);
+      setDeviceListError('');
+    } else {
+      setDeviceListError(res?.error || 'Failed to load device list.');
+    }
+  };
+
   const enqueueShareSnackbar = (share, statusOverride) => {
     const status = statusOverride || share?.status || 'info';
     const label = share?.label || share?.displayName || share?.secretId || 'share';
@@ -141,6 +208,7 @@ export default function TransfersPage() {
 
   useEffect(() => {
     refreshShares();
+    refreshDeviceState();
     let unsub = null;
     if (window.electronAPI?.onShareEvent) {
       unsub = window.electronAPI.onShareEvent((evt) => {
@@ -160,6 +228,67 @@ export default function TransfersPage() {
   }, []);
 
   useEffect(() => {
+    if (!remoteState?.devices) return;
+    if (!selectedDeviceId && remoteState.devices.length) {
+      setSelectedDeviceId(remoteState.devices[0].device_id || '');
+      setSelectedDeviceName(remoteState.devices[0].name || '');
+    }
+  }, [remoteState, selectedDeviceId]);
+
+  useEffect(() => {
+    if (!selectedDeviceId) {
+      setDeviceRoots([]);
+      setSelectedRoot(null);
+      setRemoteEntries([]);
+      setRemoteDirRel('');
+      return;
+    }
+    const selectedDevice = (remoteState.devices || []).find((d) => d?.device_id === selectedDeviceId) || {};
+    const policy = getDeviceBrowsePolicy(selectedDevice);
+    const drives = (remoteState.drives || []).filter((d) =>
+      d?.device_id === selectedDeviceId
+      && d?.is_active !== 0
+      && d?.is_available !== 0
+    );
+    const roots = (remoteState.roots || []).filter((r) =>
+      r?.device_id === selectedDeviceId
+      && r?.is_active !== 0
+      && r?.is_available !== 0
+    );
+    const driveRoots = drives.map((d) => ({
+      key: `vol:${d.volume_uuid}`,
+      type: 'volume',
+      label: d.label || d.volume_label || d.volume_name || d.volume_uuid || 'Volume',
+      volumeUuid: d.volume_uuid,
+      rootPath: d.root_path || d.rootPath || d.mount_point_last || d.mount_point || d.path || '',
+      deviceId: d.device_id,
+      os_internal: d.os_internal
+    })).filter((d) => d.volumeUuid && d.rootPath);
+    const manualRoots = roots.map((r) => {
+      const rootId = r.__rootId || r.id || r.root_id;
+      return {
+        key: `root:${rootId || r.path}`,
+        type: 'root',
+        label: r.label || r.path || 'Root',
+        volumeUuid: r.volume_uuid || (rootId ? `manual:${rootId}` : null),
+        rootPath: r.path || '',
+        deviceId: r.device_id
+      };
+    }).filter((r) => r.volumeUuid && r.rootPath);
+    let visibleRoots = [...driveRoots, ...manualRoots];
+    if (policy.mode === 'external') {
+      visibleRoots = driveRoots.filter((d) => d.os_internal === false || d.os_internal === 0);
+    } else if (policy.mode === 'custom') {
+      const allow = new Set((policy.folders || []).map((p) => String(p)));
+      visibleRoots = manualRoots.filter((r) => allow.has(r.rootPath));
+    }
+    setDeviceRoots(visibleRoots);
+    setSelectedRoot(null);
+    setRemoteEntries([]);
+    setRemoteDirRel('');
+  }, [remoteState, selectedDeviceId]);
+
+  useEffect(() => {
     if (!window.electronAPI?.onCrocEvent) return undefined;
     const unsub = window.electronAPI.onCrocEvent((evt) => {
       if (evt?.type !== 'transfer' || !evt.transfer) return;
@@ -167,7 +296,21 @@ export default function TransfersPage() {
       const label = transfer.fileName
         || (transfer.paths?.length ? transfer.paths[0].split('/').pop() : (transfer.code || 'transfer'));
       const status = transfer.status || 'running';
-      const message = formatStatusLabel(status) || 'transfer';
+      const tense = status === 'completed'
+        ? 'Completed'
+        : status === 'failed'
+          ? 'Failed'
+          : status === 'cancelled'
+            ? 'Cancelled'
+            : status === 'sending'
+              ? 'Sending'
+              : status === 'receiving'
+                ? 'Receiving'
+                : 'Working';
+      const detail = transfer.progressDetail || '';
+      const message = detail
+        ? `${tense}: ${label} — ${detail}`
+        : `${tense}: ${label}`;
       setSnackbarQueue((prev) => [...prev, { status, message, label, transfer }]);
     });
     return () => { if (unsub) unsub(); };
@@ -255,9 +398,24 @@ export default function TransfersPage() {
   const clearShareModal = () => {
     setShareModalPaths([]);
     setShareModalLabel('');
+    setShareModalOwnerDeviceId('');
+    setShareModalOwnerName('');
+    setShareModalDisplayName('');
+    setShareModalFileCount(null);
+    setShareModalTotalBytes(null);
   };
 
-  const createShareWithConfig = async ({ paths, label, maxDownloads, allowBrowser }) => {
+  const createShareWithConfig = async ({
+    paths,
+    label,
+    maxDownloads,
+    allowBrowser,
+    ownerDeviceId,
+    ownerName,
+    displayName,
+    fileCount,
+    totalBytes
+  }) => {
     setError('');
     setInfo('');
     if (!paths.length) {
@@ -268,15 +426,21 @@ export default function TransfersPage() {
       paths,
       label: label || undefined,
       maxDownloads,
-      allowBrowser
+      allowBrowser,
+      ownerDeviceId: ownerDeviceId || undefined,
+      ownerName: ownerName || undefined,
+      displayName: displayName || undefined,
+      fileCount: typeof fileCount === 'number' ? fileCount : undefined,
+      totalBytes: typeof totalBytes === 'number' ? totalBytes : undefined
     });
     if (!res?.ok || !res.share) {
       setError(res?.error || 'Failed to create share.');
-      return;
+      return res;
     }
     const link = normalizeShareLink(res.share);
     setInfo(link ? `Share link ready: ${link}` : 'Share created.');
     refreshShares();
+    return res;
   };
 
   const handleReceive = async () => {
@@ -321,6 +485,14 @@ export default function TransfersPage() {
     await window.electronAPI.setIndexerSetting('transfers_croc_relay', crocRelay || '');
     await window.electronAPI.setIndexerSetting('transfers_croc_pass', crocPassphrase || '');
     await window.electronAPI.setIndexerSetting('start_minimized', startMinimized ? '1' : '0');
+    await window.electronAPI.setIndexerSetting('transfers_browse_enabled', browseEnabled ? '1' : '0');
+    await window.electronAPI.setIndexerSetting('transfers_browse_mode', browseMode || 'indexed');
+    await window.electronAPI.setIndexerSetting('transfers_browse_folders', JSON.stringify(browseFolders || []));
+    await window.electronAPI.updateBrowsePolicy?.({
+      browseEnabled,
+      browseMode,
+      browseFolders
+    });
     setInfo('Download folder saved.');
   };
 
@@ -349,9 +521,314 @@ export default function TransfersPage() {
       paths: shareModalPaths,
       label: shareModalLabel,
       maxDownloads: shareModalMaxDownloads,
-      allowBrowser: shareModalAllowBrowser
+      allowBrowser: shareModalAllowBrowser,
+      ownerDeviceId: shareModalOwnerDeviceId || undefined,
+      ownerName: shareModalOwnerName || undefined,
+      displayName: shareModalDisplayName || undefined,
+      fileCount: shareModalFileCount,
+      totalBytes: shareModalTotalBytes
     });
     setShareModalOpen(false);
+  };
+
+  const selectDevice = (device) => {
+    const id = device?.device_id || '';
+    if (!id) return;
+    setSelectedDeviceId(id);
+    setSelectedDeviceName(String(device?.name || id).split('.')[0]);
+    setBrowseModalOpen(true);
+  };
+
+  const getDeviceBrowsePolicy = (device) => {
+    const isLocal = deviceId && device?.device_id === deviceId;
+    if (isLocal) {
+      return {
+        enabled: browseEnabled,
+        mode: browseMode || 'indexed',
+        folders: browseFolders || []
+      };
+    }
+    let enabled = device?.browseEnabled;
+    if (enabled == null && device?.browse_enabled != null) enabled = device.browse_enabled;
+    if (enabled == null && device?.browse_enabled === 0) enabled = false;
+    if (enabled == null) enabled = true;
+    const mode = device?.browseMode || device?.browse_mode || 'indexed';
+    let folders = device?.browseFolders || device?.browse_folders || [];
+    if (typeof folders === 'string') {
+      try { folders = JSON.parse(folders); } catch { folders = []; }
+    }
+    return {
+      enabled: !!enabled,
+      mode,
+      folders: Array.isArray(folders) ? folders : []
+    };
+  };
+
+  const loadDirectoryContents = async (root, dirRel = '') => {
+    if (!window.electronAPI?.getDirectoryContents || !root) return;
+    setRemoteLoading(true);
+    setRemoteError('');
+    setRemoteSelection([]);
+    try {
+      const res = await window.electronAPI.getDirectoryContents(root.volumeUuid, root.rootPath, dirRel || '', root.deviceId || selectedDeviceId);
+      if (!res?.ok) {
+        setRemoteError(res?.error || 'Failed to load directory.');
+        setRemoteEntries([]);
+      } else {
+        const files = (res.files || []).filter((f) => f?.status !== 'deleted' && f?.status !== 'missing');
+        setRemoteEntries(files);
+        setRemoteDirCache((prev) => ({ ...prev, [dirRel || '']: files }));
+      }
+    } catch (e) {
+      setRemoteError(e?.message || String(e));
+      setRemoteEntries([]);
+    } finally {
+      setRemoteLoading(false);
+    }
+  };
+
+  const openRoot = async (root) => {
+    setSelectedRoot(root);
+    setRemoteDirRel('');
+    setRemoteHistory(['']);
+    setRemoteHistoryIndex(0);
+    setRemoteSelection([]);
+    setMetaEntry(null);
+    await loadDirectoryContents(root, '');
+  };
+
+  const openEntry = async (entry) => {
+    if (!selectedRoot || !entry?.is_dir) return;
+    const nextRel = entry.relative_path || entry.path?.replace(`${selectedRoot.rootPath}/`, '');
+    setRemoteDirRel(nextRel || '');
+    setRemoteHistory((prev) => {
+      const next = prev.slice(0, remoteHistoryIndex + 1);
+      next.push(nextRel || '');
+      return next;
+    });
+    setRemoteHistoryIndex((prev) => prev + 1);
+    setRemoteSelection([]);
+    setMetaEntry(null);
+    await loadDirectoryContents(selectedRoot, nextRel || '');
+  };
+
+  const goUp = async () => {
+    if (!selectedRoot) return;
+    if (!remoteDirRel) {
+      setRemoteEntries([]);
+      return;
+    }
+    const parts = remoteDirRel.split('/').filter(Boolean);
+    parts.pop();
+    const nextRel = parts.join('/');
+    setRemoteDirRel(nextRel);
+    setRemoteHistory((prev) => {
+      const next = prev.slice(0, remoteHistoryIndex + 1);
+      next.push(nextRel);
+      return next;
+    });
+    setRemoteHistoryIndex((prev) => prev + 1);
+    setRemoteSelection([]);
+    await loadDirectoryContents(selectedRoot, nextRel);
+  };
+
+  const goBack = async () => {
+    if (!selectedRoot || remoteHistoryIndex <= 0) return;
+    const nextIndex = remoteHistoryIndex - 1;
+    const nextRel = remoteHistory[nextIndex] || '';
+    setRemoteHistoryIndex(nextIndex);
+    setRemoteDirRel(nextRel);
+    setRemoteSelection([]);
+    await loadDirectoryContents(selectedRoot, nextRel);
+  };
+
+  const goForward = async () => {
+    if (!selectedRoot || remoteHistoryIndex >= remoteHistory.length - 1) return;
+    const nextIndex = remoteHistoryIndex + 1;
+    const nextRel = remoteHistory[nextIndex] || '';
+    setRemoteHistoryIndex(nextIndex);
+    setRemoteDirRel(nextRel);
+    setRemoteSelection([]);
+    await loadDirectoryContents(selectedRoot, nextRel);
+  };
+
+  const entryFullPath = (entry) => {
+    if (!entry) return '';
+    if (entry.path) return entry.path;
+    if (selectedRoot?.rootPath && entry.relative_path) {
+      return `${selectedRoot.rootPath}/${entry.relative_path}`.replace(/\/+/g, '/');
+    }
+    return '';
+  };
+
+  const shareRemoteEntry = (entry) => {
+    const fullPath = entryFullPath(entry);
+    if (!fullPath) return;
+    const label = entry.name || fullPath.split('/').pop() || fullPath;
+    setShareModalPaths([fullPath]);
+    setShareModalLabel(label);
+    setShareModalMaxDownloads(0);
+    setShareModalAllowBrowser(true);
+    setShareModalOwnerDeviceId(selectedDeviceId);
+    setShareModalOwnerName(selectedDeviceName || selectedDeviceId);
+    setShareModalDisplayName(label);
+    setShareModalFileCount(entry.is_dir ? 0 : 1);
+    setShareModalTotalBytes(typeof entry.size_bytes === 'number' ? entry.size_bytes : null);
+    setShareModalOpen(true);
+  };
+
+  const toggleRemoteSelection = (entry) => {
+    const fullPath = entryFullPath(entry);
+    if (!fullPath) return;
+    setRemoteSelection((prev) => {
+      if (prev.some((p) => p === fullPath)) {
+        return prev.filter((p) => p !== fullPath);
+      }
+      return [...prev, fullPath];
+    });
+  };
+
+  const clearRemoteSelection = () => setRemoteSelection([]);
+
+  const shareSelectedRemote = async () => {
+    if (!remoteSelection.length || !selectedDeviceId) return;
+    const label = remoteSelection.length === 1
+      ? (remoteSelection[0].split('/').pop() || remoteSelection[0])
+      : `${remoteSelection.length} items`;
+    setSnackbarQueue((prev) => [...prev, { status: 'info', message: `Creating share for ${label}`, label, transfer: null }]);
+    const res = await createShareWithConfig({
+      paths: remoteSelection,
+      label,
+      maxDownloads: 0,
+      allowBrowser: true,
+      ownerDeviceId: selectedDeviceId,
+      ownerName: selectedDeviceName || selectedDeviceId
+    });
+    if (res?.ok && res.share) {
+      const link = normalizeShareLink(res.share);
+      if (link) {
+        try { await navigator.clipboard.writeText(link); } catch {}
+        setInfo('Share link copied to clipboard.');
+        setSnackbarQueue((prev) => [...prev, { status: 'completed', message: `Share link copied for ${label}`, label, transfer: null }]);
+      }
+    }
+  };
+
+  const downloadSelectedRemote = async () => {
+    if (!remoteSelection.length || !selectedDeviceId) return;
+    const label = remoteSelection.length === 1
+      ? (remoteSelection[0].split('/').pop() || remoteSelection[0])
+      : `${remoteSelection.length} items`;
+    setSnackbarQueue((prev) => [...prev, { status: 'starting', message: `Starting download for ${label}`, label, transfer: { status: 'starting' } }]);
+    const res = await createShareWithConfig({
+      paths: remoteSelection,
+      label,
+      maxDownloads: 0,
+      allowBrowser: true,
+      ownerDeviceId: selectedDeviceId,
+      ownerName: selectedDeviceName || selectedDeviceId
+    });
+    if (res?.ok && res.share) {
+      await window.electronAPI?.readyShare({ secretId: res.share.secretId });
+      setInfo('Download started.');
+      setBrowseModalOpen(false);
+    }
+  };
+
+  const shareEntryDirect = async (entry) => {
+    const fullPath = entryFullPath(entry);
+    if (!fullPath || !selectedDeviceId) return;
+    const label = entry.name || fullPath.split('/').pop() || fullPath;
+    const res = await createShareWithConfig({
+      paths: [fullPath],
+      label,
+      maxDownloads: 0,
+      allowBrowser: true,
+      ownerDeviceId: selectedDeviceId,
+      ownerName: selectedDeviceName || selectedDeviceId
+    });
+    if (res?.ok && res.share) {
+      const link = normalizeShareLink(res.share);
+      if (link) {
+        try { await navigator.clipboard.writeText(link); } catch {}
+        setInfo('Share link copied to clipboard.');
+      }
+    }
+  };
+
+  const downloadEntryDirect = async (entry) => {
+    const fullPath = entryFullPath(entry);
+    if (!fullPath || !selectedDeviceId) return;
+    const label = entry.name || fullPath.split('/').pop() || fullPath;
+    setSnackbarQueue((prev) => [...prev, { status: 'starting', message: `Starting download for ${label}`, label, transfer: { status: 'starting' } }]);
+    const res = await createShareWithConfig({
+      paths: [fullPath],
+      label,
+      maxDownloads: 0,
+      allowBrowser: true,
+      ownerDeviceId: selectedDeviceId,
+      ownerName: selectedDeviceName || selectedDeviceId
+    });
+    if (res?.ok && res.share) {
+      await window.electronAPI?.readyShare({ secretId: res.share.secretId });
+      setInfo('Download started.');
+      setBrowseModalOpen(false);
+    }
+  };
+
+  const breadcrumb = remoteDirRel
+    ? remoteDirRel.split('/').filter(Boolean)
+    : [];
+
+  const jumpToDirRel = async (dirRel) => {
+    if (!selectedRoot) return;
+    setRemoteDirRel(dirRel || '');
+    setRemoteHistory((prev) => {
+      const next = prev.slice(0, remoteHistoryIndex + 1);
+      next.push(dirRel || '');
+      return next;
+    });
+    setRemoteHistoryIndex((prev) => prev + 1);
+    setRemoteSelection([]);
+    await loadDirectoryContents(selectedRoot, dirRel || '');
+  };
+
+  const getColumnEntries = (dirRel) => {
+    return remoteDirCache[dirRel || ''] || [];
+  };
+
+  const columnPaths = (() => {
+    if (!selectedRoot) return [];
+    const parts = breadcrumb;
+    const levels = [''];
+    let acc = '';
+    for (const part of parts) {
+      acc = acc ? `${acc}/${part}` : part;
+      levels.push(acc);
+    }
+    // show last 3 columns
+    return levels.slice(-3);
+  })();
+
+  const localManualRoots = useMemo(() => {
+    if (!deviceId) return [];
+    return (remoteState.roots || [])
+      .filter((r) => r?.device_id === deviceId && r?.is_active !== 0)
+      .map((r) => ({
+        id: r.__rootId || r.id || r.root_id || r.path,
+        path: r.path,
+        label: r.label || r.path
+      }))
+      .filter((r) => r.path);
+  }, [remoteState, deviceId]);
+
+  const addBrowseFolder = async () => {
+    if (!window.electronAPI?.selectDirectory) return;
+    const folder = await window.electronAPI.selectDirectory();
+    if (!folder) return;
+    await window.electronAPI.indexerAddManualRoot?.(folder);
+    setBrowseFolders((prev) => Array.from(new Set([...(prev || []), folder])));
+    refreshDeviceState();
   };
 
   const cancelShare = async (share) => {
@@ -500,13 +977,18 @@ export default function TransfersPage() {
               setShareModalLabel('');
               setShareModalMaxDownloads(0);
               setShareModalAllowBrowser(false);
+              setShareModalOwnerDeviceId('');
+              setShareModalOwnerName('');
+              setShareModalDisplayName('');
+              setShareModalFileCount(null);
+              setShareModalTotalBytes(null);
             }}
           >
             Create Share
           </Button>
           <Tooltip title="Refresh">
             <span>
-              <IconButton onClick={refreshShares} disabled={refreshing}>
+              <IconButton onClick={() => { refreshShares(); refreshDeviceState(); }} disabled={refreshing}>
                 <RefreshIcon />
               </IconButton>
             </span>
@@ -523,6 +1005,224 @@ export default function TransfersPage() {
 
       {error ? <Alert severity="error">{error}</Alert> : null}
       {info ? <Alert severity="success">{info}</Alert> : null}
+
+      <Box>
+        <Stack direction="row" spacing={1} alignItems="center" sx={{ mb: 1 }}>
+          <Typography variant="h6">Computers</Typography>
+          <Typography variant="caption" color="text.secondary">
+            Select a device to browse its indexed files.
+          </Typography>
+        </Stack>
+        {deviceListError ? <Alert severity="error" sx={{ mb: 1 }}>{deviceListError}</Alert> : null}
+        <Stack direction="row" spacing={1} sx={{ flexWrap: 'wrap' }}>
+          {(remoteState.devices || []).length ? (
+            remoteState.devices
+              .filter((device) => {
+                const id = device.device_id || device.id || device.deviceId;
+                if (deviceId && id === deviceId) return true;
+                const policy = getDeviceBrowsePolicy(device);
+                return policy.enabled;
+              })
+              .map((device) => {
+                const id = device.device_id || device.id || device.deviceId;
+                const label = String(device.name || id || 'device').split('.')[0];
+                const selected = id && id === selectedDeviceId;
+                return (
+                  <Chip
+                    key={id || label}
+                    label={label}
+                    color={selected ? 'primary' : 'default'}
+                    variant={selected ? 'filled' : 'outlined'}
+                    onClick={() => selectDevice({ device_id: id, name: label })}
+                  />
+                );
+              })
+          ) : (
+            <Typography variant="body2" color="text.secondary">
+              No devices registered yet.
+            </Typography>
+          )}
+        </Stack>
+        {selectedDeviceId ? null : null}
+      </Box>
+
+      <Dialog
+        open={browseModalOpen}
+        onClose={() => setBrowseModalOpen(false)}
+        maxWidth="xl"
+        fullWidth
+        PaperProps={{ sx: { bgcolor: '#14161a' } }}
+      >
+        <DialogTitle sx={{ bgcolor: '#14161a' }}>{selectedDeviceName || selectedDeviceId} Files</DialogTitle>
+        <DialogContent dividers sx={{ bgcolor: '#14161a' }}>
+          <Box sx={{ display: 'grid', gridTemplateColumns: { xs: '1fr', md: '260px 1fr' }, gap: 2, height: 680 }}>
+            <Box sx={{ border: '1px solid rgba(255,255,255,0.08)', borderRadius: 1.5, p: 1.5, overflow: 'auto' }}>
+              <Typography variant="subtitle2" sx={{ mb: 1 }}>
+                Sources
+              </Typography>
+              {deviceRoots.length ? (
+                <Stack spacing={0.5}>
+                  {deviceRoots.map((root) => (
+                    <Button
+                      key={root.key}
+                      size="small"
+                      variant={selectedRoot?.key === root.key ? 'contained' : 'text'}
+                      onClick={() => openRoot(root)}
+                      sx={{ justifyContent: 'flex-start' }}
+                    >
+                      {root.label}
+                    </Button>
+                  ))}
+                </Stack>
+              ) : (
+                <Typography variant="body2" color="text.secondary">
+                  No indexed roots for this device.
+                </Typography>
+              )}
+            </Box>
+            <Box sx={{ border: '1px solid rgba(255,255,255,0.08)', borderRadius: 1.5, p: 1.5, overflow: 'hidden', display: 'flex', flexDirection: 'column' }}>
+              <Stack direction="row" spacing={1} alignItems="center" sx={{ mb: 1 }}>
+                <Typography variant="subtitle2">Browse</Typography>
+                {remoteSelection.length ? (
+                  <Stack direction="row" spacing={1} alignItems="center">
+                    <Button size="small" variant="outlined" onClick={shareSelectedRemote}>
+                      Share Link
+                    </Button>
+                    <Button size="small" variant="contained" onClick={downloadSelectedRemote}>
+                      Download
+                    </Button>
+                    <Button size="small" variant="text" onClick={clearRemoteSelection}>
+                      Clear
+                    </Button>
+                  </Stack>
+                ) : null}
+                <Stack direction="row" spacing={0.5}>
+                  <IconButton size="small" onClick={goBack} disabled={remoteHistoryIndex <= 0}>
+                    ‹
+                  </IconButton>
+                  <IconButton size="small" onClick={goForward} disabled={remoteHistoryIndex >= remoteHistory.length - 1}>
+                    ›
+                  </IconButton>
+                </Stack>
+                {selectedRoot ? (
+                  <>
+                    <Button size="small" onClick={goUp} disabled={!remoteDirRel}>
+                      Up
+                    </Button>
+                    <Typography variant="caption" color="text.secondary" sx={{ display: 'flex', flexWrap: 'wrap', gap: 0.5 }}>
+                      <Button size="small" variant="text" onClick={() => jumpToDirRel('')}>
+                        {selectedRoot.rootPath}
+                      </Button>
+                      {breadcrumb.map((part, idx) => {
+                        const rel = breadcrumb.slice(0, idx + 1).join('/');
+                        return (
+                          <Button key={rel} size="small" variant="text" onClick={() => jumpToDirRel(rel)}>
+                            / {part}
+                          </Button>
+                        );
+                      })}
+                    </Typography>
+                  </>
+                ) : (
+                  <Typography variant="caption" color="text.secondary">
+                    Pick a source to view files.
+                  </Typography>
+                )}
+              </Stack>
+              {remoteError ? <Alert severity="error" sx={{ mb: 1 }}>{remoteError}</Alert> : null}
+              {selectedRoot ? (
+                <Box sx={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 1, flex: 1, minHeight: 0 }}>
+                  {columnPaths.map((dirRel) => {
+                    const entries = getColumnEntries(dirRel);
+                    return (
+                      <Box key={dirRel || 'root'} sx={{ border: '1px solid rgba(255,255,255,0.06)', borderRadius: 1, overflow: 'hidden', display: 'flex', flexDirection: 'column', minHeight: 0 }}>
+                        <Box sx={{ px: 1.5, py: 1, bgcolor: 'rgba(255,255,255,0.04)' }}>
+                          <Typography variant="caption" color="text.secondary">
+                            {dirRel ? dirRel.split('/').slice(-1)[0] : (selectedRoot.label || selectedRoot.rootPath)}
+                          </Typography>
+                        </Box>
+                        <Box sx={{ overflow: 'auto', flex: 1 }}>
+                          <List dense disablePadding>
+                            {entries.map((entry) => {
+                              const isActive = entry.is_dir && (entry.relative_path || '') === remoteDirRel;
+                              const checked = remoteSelection.includes(entry.path);
+                              return (
+                                <ListItem key={entry.path || entry.relative_path} disablePadding>
+                                  <ListItemButton
+                                    selected={isActive}
+                                    onClick={() => entry.is_dir ? openEntry(entry) : setMetaEntry(entry)}
+                                  >
+                                    <Checkbox
+                                      checked={checked}
+                                      onClick={(e) => {
+                                        e.stopPropagation();
+                                        toggleRemoteSelection(entry);
+                                      }}
+                                    />
+                                    <ListItemText
+                                      primary={entry.name || entry.relative_path || entry.path}
+                                      secondary={entry.is_dir ? 'Folder' : formatBytes(entry.size_bytes || 0)}
+                                    />
+                                  </ListItemButton>
+                                </ListItem>
+                              );
+                            })}
+                            {!entries.length && !remoteLoading ? (
+                              <ListItem>
+                                <ListItemText primary="Empty" primaryTypographyProps={{ variant: 'caption', color: 'text.secondary' }} />
+                              </ListItem>
+                            ) : null}
+                          </List>
+                        </Box>
+                      </Box>
+                    );
+                  })}
+                </Box>
+              ) : null}
+              {metaEntry ? (
+                <Box sx={{ mt: 1.5, border: '1px solid rgba(255,255,255,0.08)', borderRadius: 1.5, p: 1.5 }}>
+                  <Stack spacing={1}>
+                    <Typography variant="subtitle2">Metadata</Typography>
+                    <Typography variant="body2" sx={{ fontWeight: 600 }}>
+                      {metaEntry.name || metaEntry.relative_path || metaEntry.path || '—'}
+                    </Typography>
+                    <Typography variant="body2">{metaEntry.path || '—'}</Typography>
+                    <Stack direction={{ xs: 'column', md: 'row' }} spacing={3}>
+                      <Box>
+                        <Typography variant="caption" color="text.secondary">Type</Typography>
+                        <Typography variant="body2">{metaEntry.is_dir ? 'Folder' : 'File'}</Typography>
+                      </Box>
+                      <Box>
+                        <Typography variant="caption" color="text.secondary">Size</Typography>
+                        <Typography variant="body2">{metaEntry.is_dir ? '—' : formatBytes(metaEntry.size_bytes || 0)}</Typography>
+                      </Box>
+                      <Box>
+                        <Typography variant="caption" color="text.secondary">Modified</Typography>
+                        <Typography variant="body2">{metaEntry.mtime ? new Date(metaEntry.mtime * 1000).toLocaleString() : '—'}</Typography>
+                      </Box>
+                      <Box>
+                        <Typography variant="caption" color="text.secondary">Kind</Typography>
+                        <Typography variant="body2">{metaEntry.file_type || metaEntry.ext || '—'}</Typography>
+                      </Box>
+                    </Stack>
+                    <Stack direction="row" spacing={1}>
+                      <Button size="small" variant="outlined" onClick={() => shareEntryDirect(metaEntry)}>
+                        Share Link
+                      </Button>
+                      <Button size="small" variant="contained" onClick={() => downloadEntryDirect(metaEntry)}>
+                        Download
+                      </Button>
+                    </Stack>
+                  </Stack>
+                </Box>
+              ) : null}
+            </Box>
+          </Box>
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => setBrowseModalOpen(false)}>Close</Button>
+        </DialogActions>
+      </Dialog>
 
       <Stack direction={{ xs: 'column', md: 'row' }} spacing={2}>
         <Box sx={{ flex: 1 }}>
@@ -648,9 +1348,15 @@ export default function TransfersPage() {
           ) : null}
         </Box>
       </Snackbar>
-      <Dialog open={settingsOpen} onClose={() => setSettingsOpen(false)} maxWidth="sm" fullWidth>
-        <DialogTitle>Transfer Settings</DialogTitle>
-        <DialogContent dividers>
+      <Dialog
+        open={settingsOpen}
+        onClose={() => setSettingsOpen(false)}
+        maxWidth="sm"
+        fullWidth
+        PaperProps={{ sx: { bgcolor: '#14161a' } }}
+      >
+        <DialogTitle sx={{ bgcolor: '#14161a' }}>Transfer Settings</DialogTitle>
+        <DialogContent dividers sx={{ bgcolor: '#14161a' }}>
           <Stack spacing={2}>
             <Stack direction={{ xs: 'column', md: 'row' }} spacing={1} alignItems={{ md: 'center' }}>
               <TextField
@@ -686,6 +1392,67 @@ export default function TransfersPage() {
               )}
               label="Start minimized in tray"
             />
+            <FormControlLabel
+              control={(
+                <Switch
+                  checked={browseEnabled}
+                  onChange={(e) => setBrowseEnabled(e.target.checked)}
+                />
+              )}
+              label="Allow other computers to browse this computer"
+            />
+            <TextField
+              select
+              label="Browse access"
+              value={browseMode}
+              onChange={(e) => setBrowseMode(e.target.value)}
+              size="small"
+              fullWidth
+            >
+              <MenuItem value="external">External volumes only</MenuItem>
+              <MenuItem value="indexed">Indexed files</MenuItem>
+              <MenuItem value="all">All files</MenuItem>
+              <MenuItem value="custom">Choose my own folders</MenuItem>
+            </TextField>
+            {browseMode === 'custom' ? (
+              <Box>
+                <Typography variant="subtitle2" sx={{ mb: 1 }}>
+                  Allowed folders
+                </Typography>
+                <Button variant="outlined" size="small" onClick={addBrowseFolder} sx={{ mb: 1 }}>
+                  Add Folder
+                </Button>
+                {localManualRoots.length ? (
+                  <Stack spacing={0.5}>
+                    {localManualRoots.map((root) => {
+                      const checked = browseFolders.includes(root.path);
+                      return (
+                        <FormControlLabel
+                          key={root.id}
+                          control={(
+                            <Checkbox
+                              checked={checked}
+                              onChange={(e) => {
+                                if (e.target.checked) {
+                                  setBrowseFolders((prev) => Array.from(new Set([...prev, root.path])));
+                                } else {
+                                  setBrowseFolders((prev) => prev.filter((p) => p !== root.path));
+                                }
+                              }}
+                            />
+                          )}
+                          label={root.label}
+                        />
+                      );
+                    })}
+                  </Stack>
+                ) : (
+                  <Typography variant="body2" color="text.secondary">
+                    Add manual roots in the Indexer page to choose folders.
+                  </Typography>
+                )}
+              </Box>
+            ) : null}
           </Stack>
         </DialogContent>
         <DialogActions>
@@ -693,9 +1460,15 @@ export default function TransfersPage() {
           <Button variant="contained" onClick={updateDownloadDir}>Save</Button>
         </DialogActions>
       </Dialog>
-      <Dialog open={shareModalOpen} onClose={() => setShareModalOpen(false)} maxWidth="sm" fullWidth>
-        <DialogTitle>Create Share</DialogTitle>
-        <DialogContent dividers>
+      <Dialog
+        open={shareModalOpen}
+        onClose={() => setShareModalOpen(false)}
+        maxWidth="sm"
+        fullWidth
+        PaperProps={{ sx: { bgcolor: '#14161a' } }}
+      >
+        <DialogTitle sx={{ bgcolor: '#14161a' }}>Create Share</DialogTitle>
+        <DialogContent dividers sx={{ bgcolor: '#14161a' }}>
           <Stack spacing={2}>
             <Stack direction="row" spacing={1}>
               <Button variant="outlined" onClick={addShareModalFiles}>Add Files</Button>
