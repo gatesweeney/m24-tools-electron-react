@@ -9,8 +9,9 @@ import ToggleButtonGroup from '@mui/material/ToggleButtonGroup';
 import ToggleButton from '@mui/material/ToggleButton';
 import Snackbar from '@mui/material/Snackbar';
 import Alert from '@mui/material/Alert';
-import Paper from '@mui/material/Paper';
 import Stack from '@mui/material/Stack';
+import Checkbox from '@mui/material/Checkbox';
+import FormControlLabel from '@mui/material/FormControlLabel';
 import { useJob } from '../context/JobContext';
 import { runProxyJob } from '../services/proxyService';
 import { Container } from '@mui/material';
@@ -24,6 +25,10 @@ function ProxyToolPage() {
   const [mediaDir, setMediaDir] = useState('');
   const [proxiesLocationType, setProxiesLocationType] = useState('subfolder');
   const [proxiesSubfolderName, setProxiesSubfolderName] = useState('Proxy');
+  const [nextToNamePrefixes, setNextToNamePrefixes] = useState('');
+  const [nextToNameSuffixes, setNextToNameSuffixes] = useState('');
+  const [nextToFileNameEndings, setNextToFileNameEndings] = useState('');
+  const [nextToPreferSmallestVideo, setNextToPreferSmallestVideo] = useState(false);
   const [operation, setOperation] = useState('copy');
   const [destinationDir, setDestinationDir] = useState('');
   const [preserveStructure, setPreserveStructure] = useState('preserve');
@@ -66,13 +71,17 @@ function ProxyToolPage() {
       mediaDir,
       proxiesLocationType,
       proxiesSubfolderName,
+      nextToNamePrefixes,
+      nextToNameSuffixes,
+      nextToFileNameEndings,
+      nextToPreferSmallestVideo,
       operation,
       destinationDir: operation === 'delete' ? null : destinationDir,
       preserveStructure
     };
 
     try {
-            startJob();
+      startJob();
       const result = await runProxyJob(config, (progressData) => {
         updateProgress(progressData);
       });
@@ -207,6 +216,50 @@ function ProxyToolPage() {
             </ToggleButtonGroup>
             <Typography variant="body1">.</Typography>
           </Box>
+          {proxiesLocationType === 'nextTo' && (
+            <Box
+              sx={{
+                display: 'grid',
+                gridTemplateColumns: { xs: '1fr', md: 'repeat(3, minmax(0, 1fr))' },
+                gap: 1.5
+              }}
+            >
+              <TextField
+                size="small"
+                label="Name prefixes"
+                value={nextToNamePrefixes}
+                onChange={(e) => setNextToNamePrefixes(e.target.value)}
+                placeholder="Proxy_, prox_"
+                helperText="Comma-separated prefixes at the start of the filename."
+              />
+              <TextField
+                size="small"
+                label="Name suffixes"
+                value={nextToNameSuffixes}
+                onChange={(e) => setNextToNameSuffixes(e.target.value)}
+                placeholder="_proxy, -proxy, _low"
+                helperText="Comma-separated suffixes before the extension."
+              />
+              <TextField
+                size="small"
+                label="Filename endings"
+                value={nextToFileNameEndings}
+                onChange={(e) => setNextToFileNameEndings(e.target.value)}
+                placeholder=".proxy.mov, _proxy.mp4"
+                helperText="Comma-separated full filename endings."
+              />
+              <FormControlLabel
+                sx={{ gridColumn: '1 / -1', mt: -0.5 }}
+                control={
+                  <Checkbox
+                    checked={nextToPreferSmallestVideo}
+                    onChange={(e) => setNextToPreferSmallestVideo(e.target.checked)}
+                  />
+                }
+                label="Also treat the smallest video in a matching sibling set as the proxy."
+              />
+            </Box>
+          )}
           <Box
             sx={{
               display: 'flex',

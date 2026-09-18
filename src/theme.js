@@ -13,9 +13,18 @@ const theme = createTheme({
     }
   },
   typography: {
-    fontFamily: 'Roboto, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif'
+    fontFamily: 'Roboto, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif',
+    fontSize: 19.6,
+    htmlFontSize: 22.4
   },
   components: {
+    MuiCssBaseline: {
+      styleOverrides: {
+        body: {
+          fontSize: '140%'
+        }
+      }
+    },
     MuiAppBar: {
       styleOverrides: {
         root: {
