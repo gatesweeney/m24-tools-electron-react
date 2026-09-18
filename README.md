@@ -42,7 +42,12 @@ npm run dev
   - Recursively scans media directory.
   - Detects proxies:
     - In subfolder named `Proxy` (or your provided name), or
-    - Any file with "proxy" in its name when set to "next to".
+    - For files sitting next to originals:
+      - Any filename containing `proxy`,
+      - Optional comma-separated name prefixes,
+      - Optional comma-separated name suffixes,
+      - Optional full filename endings, and
+      - Optionally the smallest video in a matching sibling set.
   - Copies / moves / deletes proxies according to your config.
   - Reports progress back to the renderer so the global bottom progress bar updates.
 

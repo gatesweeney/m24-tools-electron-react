@@ -1,6 +1,7 @@
 # Changelog
 
 ## Unreleased
+- Proxy Tool: added configurable next-to-original detection rules for prefixes, suffixes, full filename endings, and an optional smallest-video fallback.
 - Added in-app update dialog (tray “Updates…” entry) with detailed status, progress, and event logging plus IPC bridges to check/install updates.
 - Wired updater status propagation from `electron/main.js` and preload so renderer can trigger checks, receive progress, and install downloaded updates.
 - Ignoring `.dmg` disk image files during indexing to avoid scanning mounted installers.
